@@ -1,0 +1,15 @@
+{
+    "viewers": {
+        "zen": "C:\\Program Files\\Zen Browser\\zen.exe",
+        "chrome": "-",
+        "firefox": "-"
+    },
+    "default_viewer": "zen",
+    "data_folder": "C:\\Users\\rodri\\Documents\\GitHub\\open-reference\\v2\\data",
+    "references_csv": "C:\\Users\\rodri\\Documents\\GitHub\\open-reference\\v2\\references.csv",
+    "stats_json": "C:\\Users\\rodri\\Documents\\GitHub\\open-reference\\v2\\stats.json",
+    "pose_search_max_results": 5,
+    "default_type": "ha",
+    "repeat_folder_probability": 0.3,
+    "semi_rand_path_max_tries": 5
+}

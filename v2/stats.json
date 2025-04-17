@@ -1,0 +1,23 @@
+{
+    "types": {
+        "ha": 1
+    },
+    "viewers": {
+        "default": 1
+    },
+    "cycles": {},
+    "prompts": {
+        "daily_plans": [
+            "2025-04-17"
+        ],
+        "a": 1,
+        "am": 11,
+        "as": 9,
+        "cycle": 1,
+        "c": 1,
+        "fp": 1,
+        "f": 1,
+        "de": 1,
+        "dp": 1
+    }
+}
