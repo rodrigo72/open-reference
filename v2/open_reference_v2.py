@@ -14,6 +14,8 @@ from datetime import datetime
 import traceback
 import random_prompt
 import search_paths
+from compress_images import process_directory
+from check_files import find_and_delete_unwanted_files
 
 
 class MediaType(Enum):
@@ -173,50 +175,6 @@ def match_viewer_to_open_path(viewer_type, path):
             print("Unknown ViewerType.")
             return False
     return True
-
-
-def main(ref_choice: str, viewer_type: ViewerType, stats_path: str):
-    ref_choice = ref_choice.lower()
-
-    if ref_choice == "help":
-        print(HELP_TEXT)
-        return
-    elif ref_choice == "reload":
-        type = input("Choose a type (or all): ").lower()
-        if type == 'all':            
-            print("Reloading data for all categories.")
-            for category in REFERENCES:
-                init_data_structure_for_category(category)
-        elif type in REFERENCES:
-            init_data_structure_for_category(type)
-        else:
-            print("Invalid type.")
-        return
-    elif ref_choice not in REFERENCES:
-        print("Invalid choice.")
-        return
-
-    start_time = time.time()
-    if is_file_in_data_folder(ref_choice):
-        print(f"Loading data for category: {ref_choice}")
-        references = load_data_for_category(ref_choice)
-        print(f"Number of items: {len(references)}")
-    else:
-        references = init_data_structure_for_category(ref_choice)
-        if references is None:
-            return
-
-    if references:
-        path = random.choice(references)
-        if match_viewer_to_open_path(viewer_type, path) is False:
-            return 
-        print(f"Time taken: {time.time() - start_time:.2f} seconds.")
-
-        STATS['types'][ref_choice] = 1 if ref_choice not in STATS['types'] else STATS['types'][ref_choice] + 1
-        STATS['viewers'][viewer_type.value] = 1 if viewer_type.value not in STATS['viewers'] else STATS['viewers'][viewer_type.value] + 1
-        save_stats(stats_path)
-    else:
-        print(f"No images found for category '{ref_choice}'.")
 
 
 def choose_semi_random_path(paths, probability_repeat_folder) -> str:
@@ -502,6 +460,52 @@ def search_prev_aux(prev_t, cache, top_n=6):
         print("No previous path found.")
 
 
+def enter_quality_aux(default=80):
+    quality = input('Enter quality level (0-100): ')
+    if quality == '':
+        quality = default
+        print('Default quality chosen.')
+    else:
+        quality = int(quality)
+    return quality
+        
+
+def compress_aux():
+    try:
+        chosen_type = input("Choose a type (or all or normal path): ").lower()
+        if chosen_type == 'all':            
+            for value in REFERENCES.values():
+                quality = enter_quality_aux()
+                process_directory(value[0], quality=quality)
+        elif chosen_type in REFERENCES:
+            quality = enter_quality_aux()
+            process_directory(REFERENCES[chosen_type][0], quality=quality)
+        else:
+            dir_path = input('Enter directory path: ')
+            if dir_path == '':
+                dir_path = SETTINGS['default_compress_path']
+                print("Default directory path for compression was chosen.")
+
+            if not os.path.isdir(dir_path):
+                print('Directory does not exist')
+            else:
+                quality = enter_quality_aux()
+                process_directory(dir_path, quality=quality)
+    except:
+        print("An error occurred.")
+
+
+def check_files_aux():
+    chosen_type = input("Choose a type (or all): ").lower()
+    if chosen_type == 'all':            
+        for value in REFERENCES.values():
+            find_and_delete_unwanted_files(value[0])
+    elif chosen_type in REFERENCES:
+        find_and_delete_unwanted_files(REFERENCES[chosen_type][0])
+    else:
+        print("Invalid type.")
+
+
 def terminal_mode(stats_path):
     cache = {}
     print(HELP_TEXT)
@@ -563,6 +567,10 @@ def terminal_mode(stats_path):
             prev_type = search_aux(prev_type, cache)
         elif choice == 'sp' or choice == 'searchp':
             search_prev_aux(prev_type, cache)
+        elif choice == 'compress':
+            compress_aux()
+        elif choice == 'check':
+            check_files_aux()
         else:
             prev_type = else_aux(choice, cache, prob, prev_type)  
 
@@ -623,6 +631,8 @@ Commands:
 \tGenerate random drawing prompt - prompt | p
 \tSearch image (paths) by keywords - search | s
 \tSearch previous path - search_prev | sp
+\tCompress images - compress
+\tCheck for unwanted files - check
 """
             
                 choice = next(iter(REFERENCES))
@@ -634,10 +644,7 @@ Commands:
                 if choice == "terminal":
                     terminal_mode(stats_path)
                 else:          
-                    if len(sys.argv) > 3:
-                        aux = get_viewer_type_from_value(sys.argv[3])
-                        viewer = aux if aux is not None else viewer
-                    main(choice, viewer, stats_path)
+                    print('Only "terminal mode" is available.')
         
         except FileNotFoundError:
             print("Error: File was not found.")

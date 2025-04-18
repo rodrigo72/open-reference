@@ -1,9 +1,9 @@
 {
     "types": {
-        "ha": 1
+        "ha": 12
     },
     "viewers": {
-        "default": 1
+        "default": 12
     },
     "cycles": {},
     "prompts": {
