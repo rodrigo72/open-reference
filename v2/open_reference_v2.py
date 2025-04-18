@@ -464,7 +464,7 @@ def enter_quality_aux(default=80):
     quality = input('Enter quality level (0-100): ')
     if quality == '':
         quality = default
-        print('Default quality chosen.')
+        print(f'Default quality chosen: {quality}.')
     else:
         quality = int(quality)
     return quality
@@ -481,7 +481,7 @@ def compress_aux():
             quality = enter_quality_aux()
             process_directory(REFERENCES[chosen_type][0], quality=quality)
         else:
-            dir_path = input('Enter directory path: ')
+            dir_path = chosen_type
             if dir_path == '':
                 dir_path = SETTINGS['default_compress_path']
                 print("Default directory path for compression was chosen.")
