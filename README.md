@@ -11,4 +11,5 @@ A script for managing and viewing categorized image and video references through
 - Terminal-based interface
 - Usage statistics display
 - Drawing prompts
-
+- Compress images
+- Check for unwanted files
