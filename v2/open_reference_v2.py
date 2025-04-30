@@ -16,6 +16,7 @@ import random_prompt
 import search_paths
 from compress_images import process_directory
 from check_files import find_and_delete_unwanted_files
+from tqdm import tqdm
 
 
 class MediaType(Enum):
@@ -379,6 +380,27 @@ def prompt_aux(cache):
     prompt_aux_2(cache, choice_2, cycle=True)
 
 
+
+def dot_animation(initial_word, interval, duration):
+    print(initial_word, end='', flush=True)
+    start_time = time.time()
+    end_time = start_time + duration
+    next_dot_time = start_time + interval
+    
+    while next_dot_time <= end_time:
+        sleep_duration = next_dot_time - time.time()
+        if sleep_duration > 0:
+            time.sleep(sleep_duration)
+        print('.', end='', flush=True)
+        next_dot_time += interval
+    
+    remaining_time = end_time - time.time()
+    if remaining_time > 0:
+        time.sleep(remaining_time)
+    
+    print()
+
+
 def else_aux(choice, cache, prob, prev_type):
     args = choice.split()
     if len(args) == 0:
@@ -396,8 +418,36 @@ def else_aux(choice, cache, prob, prev_type):
         viewer = aux if aux is not None else ViewerType.DEFAULT
     else:
         viewer = ViewerType.DEFAULT
+
+    duration = 0
+    try:
+        if len(args) > 2:
+            if args[2].lower().strip() == 'mem':
+                if len(args) > 3:
+                    duration = time_string_to_seconds(args[3].lower().strip())
+                    if duration <= 0:
+                        duration = SETTINGS['default_memory_exercise_duration']
+                        print(f"Invalid. Interval time <= 0. Default was chosen: {duration}s.")
+                else:
+                    duration = SETTINGS['default_memory_exercise_duration']
+                    print(f"Default duration was chosen: {duration}s.")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        if TRACEBACK:
+            print(traceback.format_exc())
     
     open_file_in_viewer(type, viewer, cache, prob)
+
+    if duration > 0:
+        dot_animation("Waiting", 2, duration)
+        url = 'about:newtab'
+        viewer_key = viewer.value
+        if viewer_key not in REGISTERED_BROWSERS:
+            webbrowser.register(viewer_key, None, webbrowser.BackgroundBrowser(SETTINGS['viewers'][viewer_key]))
+            REGISTERED_BROWSERS.add(viewer_key)
+        webbrowser.get(viewer_key).open(url, new=2)
+        print("Reference hidden (with new tab).")
+
     return prev_type
 
 
@@ -668,7 +718,7 @@ Viewers: {viewers_str}
 Types: {types_str}
         
 Commands:
-\tOpen a random file - [type] [viewer]
+\tOpen a random file - [type] [viewer] mem [time]
 \tReload each category - reload
 \tStart a cycle - cycle
 \tShow this text - help

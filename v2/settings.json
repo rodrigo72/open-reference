@@ -13,5 +13,6 @@
     "pose_search_max_results": 5,
     "default_type": "ha",
     "repeat_folder_probability": 0.3,
-    "semi_rand_path_max_tries": 5
+    "semi_rand_path_max_tries": 5,
+    "default_memory_exercise_duration": 10
 }
