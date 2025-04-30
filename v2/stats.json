@@ -1,11 +1,37 @@
 {
     "types": {
-        "ha": 12
+        "ha": 30
     },
     "viewers": {
-        "default": 12
+        "default": 12,
+        "zen": 18
     },
-    "cycles": {},
+    "cycles": [
+        {
+            "date": "2025-04-30 13:52:25.100442",
+            "type": "ha",
+            "viewer": "zen",
+            "time_used": "00:00:04",
+            "interval_seconds": 1,
+            "total_files": 4
+        },
+        {
+            "date": "2025-04-30 13:52:40.630070",
+            "type": "ha",
+            "viewer": "zen",
+            "time_used": "00:00:06",
+            "interval_seconds": 2,
+            "total_files": 4
+        },
+        {
+            "date": "2025-04-30 13:52:52.678123",
+            "type": "ha",
+            "viewer": "zen",
+            "time_used": "00:00:12",
+            "interval_seconds": 4,
+            "total_files": 3
+        }
+    ],
     "prompts": {
         "daily_plans": [
             "2025-04-17"

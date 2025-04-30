@@ -1,0 +1,24 @@
+{
+    "1": [
+        {
+            "type": "ha",
+            "viewer": "zen",
+            "total_time": "10s",
+            "interval_time": "2s"
+        },
+        {
+            "type": "ha",
+            "viewer": "zen",
+            "total_time": "12s",
+            "interval_time": "4s"
+        }
+    ],
+    "2": [
+        {
+            "type": "ha",
+            "viewer": "zen",
+            "total_time": "10min",
+            "interval_time": "1min"
+        }
+    ]
+}

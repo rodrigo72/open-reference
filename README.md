@@ -13,3 +13,4 @@ A script for managing and viewing categorized image and video references through
 - Drawing prompts
 - Compress images
 - Check for unwanted files
+- Load cycles or series of cycles

@@ -38,6 +38,7 @@ e = threading.Event()
 
 FOLDERS_USED = {}
 STATS = {}
+CUSTOM_CYCLES = {}
 REGISTERED_BROWSERS = set()
 
 prev_image = ""
@@ -228,12 +229,12 @@ def wait_for_enter(e, timeout):
     e.set()
 
 
-def cycle(total_seconds: int, interval_seconds: int, type: str, viewer: ViewerType, cache: dict, e, prob: float):
+def cycle(total_seconds: int, interval_seconds: int, type_str: str, viewer: ViewerType, cache: dict, e, prob: float):
     end_time = time.time() + total_seconds
     counter = 0
     start_time = time.time()
     while time.time() < end_time and not e.is_set():
-        open_file_in_viewer(type, viewer, cache, prob)
+        open_file_in_viewer(type_str, viewer, cache, prob)
         counter += 1
         e.wait(timeout=interval_seconds)
     time_used = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
@@ -241,7 +242,7 @@ def cycle(total_seconds: int, interval_seconds: int, type: str, viewer: ViewerTy
     print(" --- End of cycle! --- ")
     STATS['cycles'].append({
         'date': datetime.now().__str__(),
-        'type': type,
+        'type': type_str,
         'viewer': viewer.value,
         'time_used': time_used,
         'interval_seconds': interval_seconds,
@@ -506,6 +507,51 @@ def check_files_aux():
         print("Invalid type.")
 
 
+def custom_cycle_aux(prev_type: str, cache: dict, e, prob: float):
+    print(json.dumps(CUSTOM_CYCLES, indent=4))
+    try:
+        cycle_id = input("> Choose an id: ")
+        if cycle_id in CUSTOM_CYCLES:
+            for cycle_obj in CUSTOM_CYCLES[cycle_id]:
+                cycle_type = cycle_obj["type"]
+                if cycle_type not in REFERENCES:
+                    print("Invalid type. Default / previous was chosen.")
+                    cycle_type = prev_type
+                
+                viewer = get_viewer_type_from_value(cycle_obj["viewer"])
+                if viewer is None:
+                    print("Invalid. Default was chosen.")
+                    viewer = ViewerType.DEFAULT
+                
+                total_seconds = time_string_to_seconds(cycle_obj["total_time"].lower())
+                if total_seconds <= 0:
+                    print("Invalid. Total time <= 0. Default was chosen.")
+                    total_seconds = 10 * 60
+                
+                interval_seconds = time_string_to_seconds(cycle_obj["interval_time"].lower())
+                if interval_seconds <= 0:
+                    print("Invalid. Interval time <= 0. Default was chosen.")
+                    interval_seconds = 90
+                
+                print(f"Choices: {cycle_type} - {viewer} - {total_seconds} - {interval_seconds}")
+                
+                input_thread = threading.Thread(target=wait_for_enter, args=(e, total_seconds))
+                input_thread.start()            
+                
+                cycle(total_seconds, interval_seconds, cycle_type, viewer, cache, e, prob)
+                input_thread.join()
+                e.clear()
+            return cycle_type
+        else:
+            print("Invalid id.")
+    except Exception as oops:
+        print(f"An unexpected error occurred: {oops}")
+        if TRACEBACK:
+            print(traceback.format_exc())
+
+    return prev_type
+
+
 def terminal_mode(stats_path):
     cache = {}
     print(HELP_TEXT)
@@ -571,6 +617,8 @@ def terminal_mode(stats_path):
             compress_aux()
         elif choice == 'check':
             check_files_aux()
+        elif choice == 'custom_cycle' or choice == 'cc':
+            prev_type = custom_cycle_aux(prev_type, cache, e, prob)
         else:
             prev_type = else_aux(choice, cache, prob, prev_type)  
 
@@ -599,6 +647,9 @@ if __name__ == '__main__':
 
             with open(stats_path, "r") as jsonfile2:
                 STATS = json.load(jsonfile2)
+
+            with open(SETTINGS['custom_cycles_path'], 'r') as jsonfile3:
+                CUSTOM_CYCLES = json.load(jsonfile3)
 
             if not REFERENCES:
                 print("The dictionary is empty.")
@@ -633,6 +684,7 @@ Commands:
 \tSearch previous path - search_prev | sp
 \tCompress images - compress
 \tCheck for unwanted files - check
+\tChoose custom cycle - custom_cycle | cc
 """
             
                 choice = next(iter(REFERENCES))
