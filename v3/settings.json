@@ -1,0 +1,12 @@
+{
+  "firefox_path": "C:\\Program Files\\Mozilla Firefox\\firefox.exe",
+  "image_extensions": [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".tiff"
+  ],
+  "default_mem_time": 90,
+  "search_max_results": 4
+}
