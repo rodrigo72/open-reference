@@ -14,7 +14,7 @@ random / rand         → random opening mode (default)
 semi                  → semi-random opening mode
                        (prefers subfolders not yet seen)
 
-cycle \[interval] \[total]
+cycle [interval] [total]
                       → gesture-drawing session: auto-advance
                         images every <interval>, stop after
                         <total> (prompts if omitted)
@@ -32,10 +32,10 @@ search prev           → open a random/semi-random image from
 
 save                  → copy current image to the save folder
 
-compress \[q]          → compress current image
-compress folder \[q]   → compress all images in current folder
-compress path <#> \[q] → compress a saved folder by number
-compress dir <p> \[q]  → compress any folder by path
+compress [q]          → compress current image
+compress folder [q]   → compress all images in current folder
+compress path <#> [q] → compress a saved folder by number
+compress dir <p> [q]  → compress any folder by path
                         q = quality 1–100 (default from settings)
 
 prompt                → random drawing prompt
