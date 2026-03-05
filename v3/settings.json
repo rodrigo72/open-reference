@@ -7,6 +7,9 @@
     ".webp",
     ".tiff"
   ],
-  "default_mem_time": 90,
-  "search_max_results": 4
+  "default_mem_time": 105,
+  "search_max_results": 4,
+  "compress_quality": 85,
+  "semi_rand_probability": 0.3,
+  "semi_rand_max_tries": 10
 }
