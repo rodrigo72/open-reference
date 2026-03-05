@@ -12,6 +12,8 @@ import shutil
 import random_prompt as _prompts
 import compress_images as _compress
 
+
+
 # map of subcommand -> (function_name, display_label)
 _PROMPT_CMDS: dict[str, tuple[str, str]] = {
     "daily":    ("complete_daily_plan",                    "Daily plan"),
@@ -308,6 +310,10 @@ def _pop_quality(tokens: list[str], default: int) -> tuple[list[str], int]:
     if tokens and tokens[-1].isdigit():
         v = int(tokens[-1])
         if 1 <= v <= 100:
+            # Don't pop if the preceding token is "path" — the number is a
+            # folder index, not a quality value (matches docstring example).
+            if len(tokens) >= 2 and tokens[-2].lower() == "path":
+                return tokens, default
             return tokens[:-1], v
     return tokens, default
 
@@ -514,7 +520,7 @@ class CancellableTimer(threading.Thread):
         if not self.cancel_flag:
             open_black_tab()
             print(f"\n  ● Time's up! Black tab opened.")
-            print("\n> ", end="", flush=True) 
+            print("\n> ", end="", flush=True)  # a '\n' disappears here when i start typing
 
 
 def start_mem_timer(seconds: int):
@@ -1416,13 +1422,14 @@ def main():
                                 prefs[key] = v - 1
 
                         _adjust_index("default_folder_index")
-                        _adjust_index("default_save_index")
 
                         if _sfi[0] == n:
                             _sfi[0] = 0
+                            prefs["default_save_index"] = 0
                             print("  ℹ  Save folder reset to [1].")
                         elif _sfi[0] > n:
                             _sfi[0] -= 1
+                            prefs["default_save_index"] = _sfi[0]
 
                         save_paths(saved_paths, path_keys, prefs)
 
