@@ -31,10 +31,13 @@ _PROMPT_CMDS: dict[str, tuple[str, str]] = {
 
 # ── Fallback constants (used when settings.json is absent or incomplete) ───────
 
-_FALLBACK_FIREFOX_PATH     = r"C:\Program Files\Mozilla Firefox\firefox.exe"
-_FALLBACK_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".tiff"}
-_FALLBACK_MEM_TIME         = 30   # seconds
-_FALLBACK_SEARCH_RESULTS   = 20   # max results returned by the search command
+_FALLBACK_FIREFOX_PATH          = r"C:\Program Files\Mozilla Firefox\firefox.exe"
+_FALLBACK_IMAGE_EXTENSIONS      = {".jpg", ".jpeg", ".png", ".webp", ".tiff"}
+_FALLBACK_MEM_TIME              = 30    # seconds
+_FALLBACK_SEARCH_RESULTS        = 20    # max results returned by the search command
+_FALLBACK_COMPRESS_QUALITY      = 85    # default JPEG quality for compress commands
+_FALLBACK_SEMI_RAND_PROBABILITY = 0.2   # chance of reusing an already-seen subfolder
+_FALLBACK_SEMI_RAND_MAX_TRIES   = 10    # max picks before falling back in semi-random
 
 # Module-level globals — overwritten by apply_settings() at startup
 FIREFOX_PATH        = _FALLBACK_FIREFOX_PATH
@@ -125,69 +128,51 @@ def save_cache(cache: dict[str, list[str]]):
 
 def load_saved_paths() -> tuple[list[str], dict[str, str], dict]:
     """
-    Returns (paths, keys, prefs).
-
-    prefs holds user-changeable persistent defaults:
-      default_folder_index  int  – which saved path to load on startup
-      default_save_index    int  – which saved path 'save' copies into
-
-    File format (current):
+    Returns (paths, keys, prefs) from the current JSON format.
+    File format:
       {
         "folders": [{"path": "...", "key": "xx"}, {"path": "..."}],
         "default_folder_index": 0,
         "default_save_index":   0
       }
-    Legacy formats (auto-migrated on next save):   # TODO: remove the legacy formats
-      plain list of path strings
-      {"paths": [...], "keys": {...}, ...}
     """
-    default_prefs: dict = {
+    default_prefs = {
         "default_folder_index": 0,
         "default_save_index":   0,
     }
 
-    if os.path.exists(PATHS_FILE):
-        try:
-            with open(PATHS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
+    if not os.path.exists(PATHS_FILE):
+        return [], {}, default_prefs
 
-            # Legacy format 1: plain list of path strings
-            if isinstance(data, list):
-                paths = [str(p) for p in data]
-                return paths, {}, default_prefs
+    try:
+        with open(PATHS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
-            if isinstance(data, dict):
-                # # Legacy format 2: separate "paths" list + "keys" dict
-                # if "paths" in data and "folders" not in data:
-                #     paths    = [str(p) for p in data.get("paths", [])]
-                #     raw_keys = data.get("keys", {})
-                #     keys     = {str(k): str(v) for k, v in raw_keys.items() if v}
-                #     prefs    = {
-                #         "default_folder_index": int(data.get("default_folder_index", 0)),
-                #         "default_save_index":   int(data.get("default_save_index", 0)),
-                #     }
-                #     return paths, keys, prefs
+        if isinstance(data, dict) and "folders" in data:
+            paths = []
+            keys = {}
 
-                # Current format: list of folder objects
-                if "folders" in data:
-                    paths = []
-                    keys  = {}
-                    for entry in data["folders"]:
-                        p = str(entry.get("path", ""))
-                        if not p:
-                            continue
-                        paths.append(p)
-                        k = entry.get("key", "")
-                        if k:
-                            keys[p] = str(k)
-                    prefs = {
-                        "default_folder_index": int(data.get("default_folder_index", 0)),
-                        "default_save_index":   int(data.get("default_save_index", 0)),
-                    }
-                    return paths, keys, prefs
+            for entry in data["folders"]:
+                path = str(entry.get("path", ""))
+                if not path:
+                    continue
 
-        except Exception:
-            pass
+                paths.append(path)
+                key = entry.get("key", "")
+                if key:
+                    keys[path] = str(key)
+
+            # Map preferences, falling back to defaults if keys are missing
+            prefs = {
+                k: int(data.get(k, v))
+                for k, v in default_prefs.items()
+            }
+
+            return paths, keys, prefs
+
+    except (json.JSONDecodeError, KeyError, ValueError):
+        # Silently fail on corrupt JSON or type mismatches
+        pass
 
     return [], {}, default_prefs
 
@@ -211,9 +196,6 @@ def save_paths(paths: list[str], keys: dict[str, str], prefs: dict):
 
 # ── Key helpers ────────────────────────────────────────────────────────────────
 
-def _key_for(path: str, keys: dict[str, str]) -> str | None:
-    return keys.get(path)
-
 
 def _path_for_key(key: str, paths: list[str], keys: dict[str, str]) -> str | None:
     key_lower = key.lower()
@@ -226,6 +208,24 @@ def _path_for_key(key: str, paths: list[str], keys: dict[str, str]) -> str | Non
 def _key_in_use(key: str, keys: dict[str, str]) -> bool:
     key_lower = key.lower()
     return any(v.lower() == key_lower for v in keys.values())
+
+
+def _resolve_folder_arg(arg: str, paths: list[str], keys: dict[str, str]) -> int:
+    """
+    Resolve a folder argument that may be a 1-based number or a key string.
+    Returns a 0-based index, or -1 if not found.
+    """
+    if arg.isdigit():
+        return int(arg) - 1
+    p = _path_for_key(arg, paths, keys)
+    return paths.index(p) if p is not None else -1
+
+
+def _bad_folder_arg(arg: str) -> str:
+    """Return an appropriate error message for an unresolved folder argument."""
+    if arg.isdigit():
+        return f"  [!] Number out of range."
+    return f"  [!] No folder with key '{arg}'."
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -254,21 +254,29 @@ def scan_folder(folder: str) -> list[str]:
     return images
 
 
-def open_path_in_firefox(path: str):
-    if not os.path.exists(path):
-        print(f"  [!] File not found: {path}")
-        return
-    img_url = "file:///" + urllib.parse.quote(os.path.abspath(path).replace("\\", "/"))
+def _ensure_firefox_registered():
+    """Register Firefox with the webbrowser module if not already done."""
     if "firefox" not in REGISTERED_BROWSERS:
         webbrowser.register(
             "firefox", None,
             webbrowser.BackgroundBrowser(FIREFOX_PATH)
         )
         REGISTERED_BROWSERS.add("firefox")
+
+
+def open_path_in_firefox(path: str):
+    if not os.path.exists(path):
+        print(f"  [!] File not found: {path}")
+        return
+    img_url = "file:///" + urllib.parse.quote(os.path.abspath(path).replace("\\", "/"))
+    _ensure_firefox_registered()
     webbrowser.get("firefox").open(img_url)
 
 
 def open_black_tab():
+    # Always ensure Firefox is registered before opening a tab — this can be
+    # called from background threads before any image has been shown.
+    _ensure_firefox_registered()
     webbrowser.get("firefox").open("about:newtab", new=2)
 
 
@@ -280,6 +288,28 @@ def fmt_time(seconds: int) -> str:
     if m: parts.append(f"{m}m")
     if s or not parts: parts.append(f"{s}s")
     return " ".join(parts)
+
+
+# ── Compress quality helper ────────────────────────────────────────────────────
+
+def _pop_quality(tokens: list[str], default: int) -> tuple[list[str], int]:
+    """
+    If the last token is a bare integer in [1, 100], pop it and return it as
+    the compression quality. Otherwise leave the list unchanged and return
+    *default*.
+
+    Examples
+    --------
+    ["folder", "75"]  →  (["folder"], 75)
+    ["path", "2"]     →  (["path", "2"], default)   # "2" is a folder index, not quality
+    ["75"]            →  ([], 75)
+    ["folder"]        →  (["folder"], default)
+    """
+    if tokens and tokens[-1].isdigit():
+        v = int(tokens[-1])
+        if 1 <= v <= 100:
+            return tokens[:-1], v
+    return tokens, default
 
 
 # ── Unwanted-file helpers ──────────────────────────────────────────────────────
@@ -375,9 +405,6 @@ def search_images(image_list: list[str], keywords: list[str], max_results: int) 
 
         score = 0
         for kw in kw_lower:
-            # Each keyword contributes its weight at most once — repeated
-            # occurrences of the same keyword don't add anything, but each
-            # distinct keyword that matches does.
             if kw in filename:
                 score += 3
             elif kw in parent:
@@ -408,6 +435,57 @@ def search_images(image_list: list[str], keywords: list[str], max_results: int) 
         return results
 
 
+# ── Semi-random image picker ───────────────────────────────────────────────────
+
+def choose_semi_random_path(
+    images: list[str],
+    folders_used: dict[str, int],
+    probability: float,
+    max_tries: int,
+) -> str:
+    """
+    Pick an image while preferring subfolders not yet seen this session.
+
+    Algorithm
+    ---------
+    Each attempt picks a random image and inspects its parent subfolder:
+      - If the subfolder is new → take it immediately and record it.
+      - If the subfolder was already used → only take it with *probability*
+        (so lower values mean stronger preference for fresh subfolders).
+
+    If every attempt in *max_tries* hit an already-used folder, fall back to
+    the candidate whose subfolder was used the *least* so far.
+
+    *folders_used* is updated in-place only when a path is actually returned.
+    """
+    candidates: list[tuple[str, str]] = []   # (image_path, folder_path) of seen folders
+
+    for _ in range(max_tries):
+        path        = random.choice(images)
+        folder_path = os.path.dirname(path)
+
+        if folder_path not in folders_used:
+            # Unused subfolder — take it immediately
+            folders_used[folder_path] = 1
+            return path
+
+        # Already-used subfolder — accept with probability
+        candidates.append((path, folder_path))
+        if random.random() <= probability:
+            folders_used[folder_path] += 1
+            return path
+
+    # Fallback: pick from the least-used subfolder seen during this round
+    if candidates:
+        candidates.sort(key=lambda x: folders_used.get(x[1], 0))
+        path, folder_path = candidates[0]
+        folders_used[folder_path] = folders_used.get(folder_path, 0) + 1
+        return path
+
+    # Absolute fallback (only reachable if images is non-empty but max_tries == 0)
+    return random.choice(images)
+
+
 # ── Memory-mode timer ──────────────────────────────────────────────────────────
 
 _timer_thread: threading.Thread | None = None
@@ -436,7 +514,7 @@ class CancellableTimer(threading.Thread):
         if not self.cancel_flag:
             open_black_tab()
             print(f"\n  ● Time's up! Black tab opened.")
-            print("Press <Enter> for next image, or type a command: ", end="", flush=True)
+            print("\n> ", end="", flush=True)
 
 
 def start_mem_timer(seconds: int):
@@ -515,12 +593,16 @@ class CycleSession(threading.Thread):
 HELP_TEXT = """
 Commands
 ────────────────────────────────────────────────────────
-  <Enter>              → next random image
+  <Enter>              → next image (random or semi-random)
   mem                  → memory mode (uses default time)
   mem 30s / mem 1m30s  → memory mode with custom time
   normal               → switch back to normal mode
   shuffle              → reshuffle the image list
   info                 → show current session settings
+
+  random               → random opening mode (default)
+  semi                 → semi-random opening mode
+                         (prefers subfolders not yet seen)
 
   cycle [interval] [total]
                        → gesture-drawing session: auto-advance
@@ -533,17 +615,22 @@ Commands
   search <keywords>    → search loaded images by filename/path
                          keywords; opens matches one by one.
                          Press <Enter> to advance, 'stop' to
-                         exit search mode. Max results come
-                         from settings (search_max_results).
+                         exit search mode.
                          e.g.  search hand pose
-                               search torso front
+                               search 10 hand pose  (limit to 10)
+  search prev          → open a random/semi-random image from
+                         the same subfolder as the last image
 
   save                 → copy current image to the save folder
 
-  compress             → compress current image
-  compress folder      → compress all images in current folder
-  compress path <#>    → compress a saved folder by number
-  compress dir <path>  → compress any folder by path
+  compress [q]         → compress current image
+  compress folder [q]  → compress all images in current folder
+  compress path <#> [q]→ compress a saved folder by number
+  compress dir <p> [q] → compress any folder by path
+                         q = quality 1–100 (default from settings)
+                         e.g.  compress 75
+                               compress folder 60
+                               compress path 2 80
 
   prompt               → random drawing prompt
   prompt daily         → full daily plan
@@ -553,9 +640,9 @@ Commands
   paths                → list all saved folders
   path <#|key>         → switch to folder by number or key
   path add <path>      → add & scan a new folder
-  path del <#>         → remove folder + its cache
-  path rename <#> <p>  → replace a saved path
-  path swap <#> <#>    → swap two folders by number
+  path del <#|key>     → remove folder + its cache
+  path rename <#|key> <p> → replace a saved path
+  path swap <#|key> <#|key> → swap two folders
 
   key <#> <key>        → assign a shortcut key to a folder
   key del <#>          → remove the key from a folder
@@ -566,13 +653,19 @@ Commands
   scan <#|key>         → re-scan a specific saved folder
 
   clean                → check current folder for non-media files
-  clean <#>            → check a saved folder by number
+  clean <#|key>        → check a saved folder by number or key
   clean path <path>    → check any folder by path
 
   set mem <time>       → set default mem time (persistent)
                          e.g.  set mem 45s  |  set mem 2m
   set search <n>       → set max search results (persistent)
                          e.g.  set search 10  |  set search 50
+  set compress <n>     → set default compress quality (persistent)
+                         e.g.  set compress 75  |  set compress 90
+  set semi <prob>      → set semi-random repeat probability (persistent)
+                         0.0 = never reuse a subfolder until all seen
+                         1.0 = always accept any subfolder (= random)
+                         e.g.  set semi 0.1  |  set semi 0.5
   set folder <#|key>   → set default startup folder (persistent)
   set save   <#|key>   → set default save folder (persistent)
   set                  → show current defaults & loaded settings
@@ -595,9 +688,9 @@ def print_paths(saved_paths: list[str], path_keys: dict[str, str], cache: dict, 
         browse_marker  = "►" if p == active_folder else " "
         save_marker    = "💾" if (i - 1) == save_folder_index else "  "
         default_marker = "★" if (i - 1) == default_folder_index else " "
-        cached_str     = f"{len(cache[p])} imgs" if p in cache else "not scanned"
+        cached_str     = f"{len(cache[p])}" if p in cache else "not scanned"
         key            = path_keys.get(p)
-        key_str        = f"[key: {key}]" if key else ""
+        key_str        = f"[{key}]" if key else ""
         rows.append((save_marker, default_marker, browse_marker, i, p, cached_str, key_str))
 
     num_w   = len(str(len(saved_paths)))
@@ -611,7 +704,6 @@ def print_paths(saved_paths: list[str], path_keys: dict[str, str], cache: dict, 
     print("  (★ = default startup  💾 = save destination  ► = active)\n")
 
 
-
 def do_scan(path: str, cache: dict[str, list[str]]) -> list[str] | None:
     """Scan path, update & persist cache. Returns image list or None on failure."""
     if not os.path.isdir(path):
@@ -620,12 +712,182 @@ def do_scan(path: str, cache: dict[str, list[str]]) -> list[str] | None:
     print(f"  🔍 Scanning {path} …", end="", flush=True)
     found = scan_folder(path)
     if not found:
+        # Cache the empty result so repeated scans don't re-walk the filesystem.
+        cache[path] = []
+        save_cache(cache)
         print(f"\n  [!] No images found in: {path}")
         return None
     cache[path] = found
     save_cache(cache)
     print(f" done — {len(found)} images cached.")
     return found
+
+
+# ── Tab completion ─────────────────────────────────────────────────────────────
+
+def _setup_tab_completion(saved_paths: list[str], path_keys: dict[str, str]) -> bool:
+    """
+    Register a context-aware Tab completer using readline (Unix) or
+    pyreadline3 (Windows).  Returns True if completion was set up, False if the
+    required library is not available.
+
+    The completer closes over *saved_paths* and *path_keys* by reference, so it
+    always sees the live state even after folders are added or removed.
+    """
+    try:
+        import readline as _rl
+    except ImportError:
+        try:
+            import pyreadline3 as _rl      # type: ignore
+        except ImportError:
+            return False
+
+    # ── Command / subcommand tables ────────────────────────────────────────
+    _TOP: list[str] = [
+        "mem", "normal", "random", "semi", "shuffle", "info", "stop",
+        "save", "compress", "prompt", "search", "scan", "paths", "path",
+        "key", "folder", "clean", "set", "cycle", "help", "clear",
+        "quit", "exit", "q",
+    ]
+    _COMPRESS_SUBS  = ["folder", "path", "dir"]
+    _PATH_SUBS      = ["add", "del", "swap", "rename"]
+    _KEY_SUBS       = ["del", "rename", "swap"]
+    _SET_SUBS       = ["mem", "search", "compress", "semi", "folder", "save"]
+    _PROMPT_SUBS    = ["list"] + list(_PROMPT_CMDS.keys())
+    _QUALITIES      = ["60", "70", "75", "80", "85", "90", "95"]
+
+    class _Completer:
+        def __init__(self):
+            self._matches: list[str] = []
+
+        # ── readline entry-point ───────────────────────────────────────────
+        def complete(self, text: str, state: int) -> str | None:
+            if state == 0:
+                line = _rl.get_line_buffer()
+                self._matches = self._build(line, text)
+            try:
+                return self._matches[state]
+            except IndexError:
+                return None
+
+        # ── Dynamic folder refs: numbers + keys ───────────────────────────
+        @staticmethod
+        def _folder_refs() -> list[str]:
+            refs = [str(i + 1) for i in range(len(saved_paths))]
+            for p in saved_paths:
+                k = path_keys.get(p)
+                if k:
+                    refs.append(k)
+            return refs
+
+        @staticmethod
+        def _nums() -> list[str]:
+            return [str(i + 1) for i in range(len(saved_paths))]
+
+        # ── Filter candidates by current word ─────────────────────────────
+        @staticmethod
+        def _m(candidates: list[str], prefix: str) -> list[str]:
+            p = prefix.lower()
+            return [c for c in candidates if c.lower().startswith(p)]
+
+        # ── Main completion logic ──────────────────────────────────────────
+        def _build(self, line: str, text: str) -> list[str]:
+            tokens = line.split()
+            # Are we still completing the first word?
+            if not tokens or (len(tokens) == 1 and not line.endswith(" ")):
+                return self._m(_TOP, text)
+
+            cmd = tokens[0].lower()
+            # n_full = number of tokens already fully committed
+            # (i.e. the current text-under-cursor does NOT count)
+            n_full = len(tokens) if line.endswith(" ") else len(tokens) - 1
+
+            m  = self._m
+            fr = self._folder_refs
+            nu = self._nums
+
+            # ── compress ──────────────────────────────────────────────────
+            if cmd == "compress":
+                if n_full == 1:
+                    return m(_COMPRESS_SUBS, text)
+                sub = tokens[1].lower()
+                if sub == "path":
+                    if n_full == 2:
+                        return m(fr(), text)
+                    if n_full == 3:
+                        return m(_QUALITIES, text)
+                if sub in ("folder", "dir"):
+                    # dir takes a free-form path; offer quality as final token
+                    return m(_QUALITIES, text)
+                # bare "compress <quality>"
+                return m(_QUALITIES, text)
+
+            # ── path ──────────────────────────────────────────────────────
+            elif cmd in ("path", "p"):
+                if n_full == 1:
+                    return m(_PATH_SUBS + fr(), text)
+                sub = tokens[1].lower()
+                if sub in ("del", "rename") and n_full == 2:
+                    return m(fr(), text)
+                if sub == "swap" and n_full in (2, 3):
+                    return m(fr(), text)
+                return []
+
+            # ── key ───────────────────────────────────────────────────────
+            elif cmd == "key":
+                if n_full == 1:
+                    return m(_KEY_SUBS + nu(), text)
+                sub = tokens[1].lower()
+                if sub in ("del", "rename") and n_full == 2:
+                    return m(nu(), text)
+                if sub == "swap" and n_full in (2, 3):
+                    return m(nu(), text)
+                return []
+
+            # ── set ───────────────────────────────────────────────────────
+            elif cmd == "set":
+                if n_full == 1:
+                    return m(_SET_SUBS, text)
+                sub = tokens[1].lower()
+                if sub in ("folder", "save") and n_full == 2:
+                    return m(fr(), text)
+                return []
+
+            # ── scan ──────────────────────────────────────────────────────
+            elif cmd == "scan":
+                if n_full == 1:
+                    return m(fr(), text)
+                return []
+
+            # ── clean ─────────────────────────────────────────────────────
+            elif cmd == "clean":
+                if n_full == 1:
+                    return m(["path"] + fr(), text)
+                return []
+
+            # ── search ────────────────────────────────────────────────────
+            elif cmd == "search":
+                if n_full == 1:
+                    return m(["prev"], text)
+                return []
+
+            # ── prompt ────────────────────────────────────────────────────
+            elif cmd == "prompt":
+                if n_full == 1:
+                    return m(_PROMPT_SUBS, text)
+                return []
+
+            return []
+
+    completer = _Completer()
+    _rl.set_completer(completer.complete)
+    # Only split on spaces so folder keys, paths, etc. are passed whole
+    _rl.set_completer_delims(" ")
+    try:
+        _rl.parse_and_bind("tab: complete")
+    except Exception:
+        pass
+    return True
 
 
 def main():
@@ -641,8 +903,17 @@ def main():
     saved_paths, path_keys, prefs = load_saved_paths()
     cache: dict[str, list[str]] = load_cache()
 
-    default_mem_time:   int = int(settings.get("default_mem_time",   _FALLBACK_MEM_TIME))
-    search_max_results: int = int(settings.get("search_max_results", _FALLBACK_SEARCH_RESULTS))
+    # Tab completion — set up early so it works even at the startup prompt.
+    # The completer closes over saved_paths and path_keys by reference, so it
+    # always reflects the current folder list without needing to be re-registered.
+    if not _setup_tab_completion(saved_paths, path_keys):
+        print("  ℹ  Tab completion unavailable — install pyreadline3 for Windows support.")
+
+    default_mem_time:       int   = int(settings.get("default_mem_time",         _FALLBACK_MEM_TIME))
+    search_max_results:     int   = int(settings.get("search_max_results",       _FALLBACK_SEARCH_RESULTS))
+    compress_quality:       int   = int(settings.get("compress_quality",         _FALLBACK_COMPRESS_QUALITY))
+    semi_rand_probability:  float = float(settings.get("semi_rand_probability",  _FALLBACK_SEMI_RAND_PROBABILITY))
+    semi_rand_max_tries:    int   = int(settings.get("semi_rand_max_tries",      _FALLBACK_SEMI_RAND_MAX_TRIES))
 
     # Resolve starting folder from default_folder_index (clamp to valid range)
     def _resolve_default_folder() -> str | None:
@@ -655,9 +926,15 @@ def main():
     folder  = _resolve_default_folder() or ""
     images: list[str] = []
     index   = 0
-    mem_mode    = False
-    mem_seconds = default_mem_time
+    mem_mode     = False
+    mem_seconds  = default_mem_time
+    opening_mode = "random"   # "random" | "semi-random"
+    folders_used: dict[str, int] = {}   # subfolder → times picked (semi-random)
     current_image: str | None = None
+
+    # Lock that guards `images` and `index`, which are shared between the main
+    # thread and the CycleSession background thread.
+    _image_lock = threading.Lock()
 
     # Clamp save_folder_index to valid range.
     # Stored as a one-element list so nested scopes can mutate it without nonlocal.
@@ -668,7 +945,7 @@ def main():
 
     # ── Load images for a folder (cache-first, or scan if missing) ─────────
     def load(path: str, force_scan: bool = False) -> bool:
-        nonlocal images, index, folder
+        nonlocal images, index, folder, folders_used
 
         if not path:
             print("  [!] No folder specified.")
@@ -685,9 +962,11 @@ def main():
                 return False
 
         folder = path
-        images = list(imgs)
-        random.shuffle(images)
-        index  = 0
+        folders_used = {}   # reset semi-random state on every folder switch
+        with _image_lock:
+            images = list(imgs)
+            random.shuffle(images)
+            index  = 0
         return True
 
     print("=" * 56)
@@ -698,7 +977,7 @@ def main():
     if folder:
         if not load(folder):
             folder = ""
-    
+
     if not folder or not images:
         if saved_paths:
             print("  [!] Default folder could not be loaded.")
@@ -722,19 +1001,39 @@ def main():
     def show_next(print_flag: bool = True):
         nonlocal index, current_image
         _cancel_timer()
-        if not images:
-            print("  [!] No images loaded. Use 'path add <path>' or 'folder <path>'.")
-            return
-        if index >= len(images):
-            random.shuffle(images)
-            index = 0
-            print("  ↺  Reshuffled image list.")
-        path = images[index]
-        index += 1
+
+        # Hold the lock while reading/writing index and images so CycleSession's
+        # background thread can't cause a data race or IndexError.
+        with _image_lock:
+            if not images:
+                if print_flag:
+                    print("  [!] No images loaded. Use 'path add <path>' or 'folder <path>'.")
+                return
+
+            if opening_mode == "semi-random":
+                # Semi-random: pick by subfolder preference; index not used.
+                path  = choose_semi_random_path(
+                    images, folders_used, semi_rand_probability, semi_rand_max_tries
+                )
+                idx   = -1       # no sequential position in this mode
+                total = len(images)
+            else:
+                # Random (sequential shuffle): advance through the shuffled list.
+                if index >= len(images):
+                    random.shuffle(images)
+                    index = 0
+                    if print_flag:
+                        print("  ↺  Reshuffled image list.")
+                path  = images[index]
+                idx   = index
+                total = len(images)
+                index += 1
+
         current_image = path
         name = os.path.relpath(path, folder) if folder else path
         if print_flag:
-            print(f"  [{index}/{len(images)}]  {name}")
+            pos_str = f"{idx + 1}/{total}" if opening_mode == "random" else f"~/{total}"
+            print(f"  [{pos_str}]  {name}")
         open_path_in_firefox(path)
         if mem_mode:
             start_mem_timer(mem_seconds)
@@ -764,7 +1063,7 @@ def main():
             break
 
         # ── Help ───────────────────────────────────────────────────────────
-        elif cmd == "help":
+        elif cmd in ("help", "h"):
             print(HELP_TEXT)
 
         # ── Clear ──────────────────────────────────────────────────────────
@@ -784,15 +1083,18 @@ def main():
             active_key  = path_keys.get(folder)
             key_str     = f"  [key: {active_key}]" if active_key else ""
             img_str     = str(len(images)) if images else "none loaded"
-            print(f"  Folder : {folder}{key_str}")
-            print(f"  Images : {img_str}")
-            print(f"  Mode   : {mode_str}{cycle_str}")
-            print(f"  Save → : [{_sfi[0] + 1}] {save_dest}")
+            print(f"  Folder   : {folder}{key_str}")
+            print(f"  Images   : {img_str}")
+            print(f"  Mode     : {mode_str}{cycle_str}")
+            print(f"  Opening  : {opening_mode}")
+            print(f"  Save →   : [{_sfi[0] + 1}] {save_dest}")
 
         # ── Shuffle ────────────────────────────────────────────────────────
         elif cmd == "shuffle":
-            random.shuffle(images)
-            index = 0
+            with _image_lock:
+                random.shuffle(images)
+                index = 0
+            folders_used.clear()
             print("  ↺  Reshuffled.")
 
         # ── Stop cycle ─────────────────────────────────────────────────────
@@ -802,6 +1104,17 @@ def main():
                 print("  ■  Cycle session stopped.")
             else:
                 print("  [!] No active cycle session.")
+
+        # ── Opening mode: random ───────────────────────────────────────────
+        elif cmd == "random":
+            opening_mode = "random"
+            print("  ► Opening mode: random.")
+
+        # ── Opening mode: semi-random ──────────────────────────────────────
+        elif cmd == "semi":
+            opening_mode = "semi-random"
+            folders_used.clear()
+            print(f"  ► Opening mode: semi-random  (repeat probability: {semi_rand_probability}).")
 
         # ── Save current image ─────────────────────────────────────────────
         elif cmd == "save":
@@ -827,7 +1140,6 @@ def main():
                         cache[dest_folder].append(dest)
                         save_cache(cache)
 
-
         # ── Set: change persistent defaults ───────────────────────────────
         elif cmd == "set" or cmd.startswith("set "):
             sub       = raw[3:].strip()
@@ -840,22 +1152,49 @@ def main():
                 if parsed <= 0:
                     print("  [!] Invalid time. Use formats like: 30s, 1m, 1m30s")
                 else:
-                    default_mem_time                  = parsed
-                    settings["default_mem_time"]      = parsed
+                    default_mem_time             = parsed
+                    settings["default_mem_time"] = parsed
                     save_settings(settings, settings_file)
-                    print(f"  ✔  Default mem time → {fmt_time(parsed)}  (saved to settings.json).")
+                    print(f"  ✔  Default mem time → {fmt_time(parsed)}  (saved).")
 
             # set search <n>
             elif sub_lower.startswith("search "):
                 arg = sub[7:].strip()
                 if arg.isdigit() and int(arg) > 0:
                     n = int(arg)
-                    search_max_results                 = n
-                    settings["search_max_results"]     = n
+                    search_max_results             = n
+                    settings["search_max_results"] = n
                     save_settings(settings, settings_file)
-                    print(f"  ✔  Search max results → {n}  (saved to settings.json).")
+                    apply_settings(settings)
+                    print(f"  ✔  Search max results → {n}  (saved).")
                 else:
                     print("  [!] Usage: set search <positive number>")
+
+            # set compress <quality>
+            elif sub_lower.startswith("compress "):
+                arg = sub[9:].strip()
+                if arg.isdigit() and 1 <= int(arg) <= 100:
+                    n = int(arg)
+                    compress_quality             = n
+                    settings["compress_quality"] = n
+                    save_settings(settings, settings_file)
+                    print(f"  ✔  Default compress quality → {n}  (saved).")
+                else:
+                    print("  [!] Usage: set compress <1–100>")
+
+            # set semi <probability>
+            elif sub_lower.startswith("semi "):
+                arg = sub[5:].strip()
+                try:
+                    v = float(arg)
+                    if not (0.0 <= v <= 1.0):
+                        raise ValueError
+                    semi_rand_probability             = v
+                    settings["semi_rand_probability"] = v
+                    save_settings(settings, settings_file)
+                    print(f"  ✔  Semi-random repeat probability → {v}  (saved).")
+                except ValueError:
+                    print("  [!] Usage: set semi <0.0–1.0>  e.g. set semi 0.2")
 
             # set folder <# or key>
             elif sub_lower.startswith("folder "):
@@ -870,7 +1209,7 @@ def main():
                     save_paths(saved_paths, path_keys, prefs)
                     print(f"  ✔  Default startup folder → [{n + 1}] {saved_paths[n]}  (saved).")
                 elif arg.isdigit():
-                    print(f"  [!] Number out of range (1\u2013{len(saved_paths)}).")
+                    print(f"  [!] Number out of range (1–{len(saved_paths)}).")
                 else:
                     print(f"  [!] No folder with key '{arg}'.")
 
@@ -888,10 +1227,9 @@ def main():
                     save_paths(saved_paths, path_keys, prefs)
                     print(f"  ✔  Default save folder → [{n + 1}] {saved_paths[n]}  (saved).")
                 elif arg.isdigit():
-                    print(f"  [!] Number out of range (1\u2013{len(saved_paths)}).")
+                    print(f"  [!] Number out of range (1–{len(saved_paths)}).")
                 else:
                     print(f"  [!] No folder with key '{arg}'.")
-
 
             # bare "set" → show current config
             elif sub_lower == "":
@@ -900,16 +1238,19 @@ def main():
                 si = prefs.get("default_save_index", 0)
                 sf = saved_paths[si] if saved_paths and 0 <= si < len(saved_paths) else "(none)"
                 print(f"\n  Settings  ({settings_file}):")
-                print(f"    Firefox path     : {FIREFOX_PATH}")
-                print(f"    Image extensions : {', '.join(sorted(IMAGE_EXTENSIONS))}")
-                print(f"    Default mem time : {fmt_time(default_mem_time)}")
-                print(f"    Search max results: {search_max_results}")
+                print(f"    Firefox path         : {FIREFOX_PATH}")
+                print(f"    Image extensions     : {', '.join(sorted(IMAGE_EXTENSIONS))}")
+                print(f"    Default mem time     : {fmt_time(default_mem_time)}")
+                print(f"    Search max results   : {search_max_results}")
+                print(f"    Compress quality     : {compress_quality}")
+                print(f"    Semi-rand probability: {semi_rand_probability}")
+                print(f"    Semi-rand max tries  : {semi_rand_max_tries}")
                 print(f"\n  Folder prefs  (ref_paths.json):")
-                print(f"    Startup folder   : [{di + 1}] {df}")
-                print(f"    Save folder      : [{si + 1}] {sf}")
+                print(f"    Startup folder       : [{di + 1}] {df}")
+                print(f"    Save folder          : [{si + 1}] {sf}")
                 print()
             else:
-                print("  [?] Usage:  set mem <time>  |  set search <n>  |  set folder <#>  |  set save <#>  |  set")
+                print("  [?] Usage:  set mem <t>  |  set search <n>  |  set compress <q>  |  set semi <p>  |  set folder <#>  |  set save <#>  |  set")
 
         # ── Cycle mode ─────────────────────────────────────────────────────
         elif cmd == "cycle" or cmd.startswith("cycle "):
@@ -954,17 +1295,25 @@ def main():
 
         # ── Compress ───────────────────────────────────────────────────────
         elif cmd == "compress" or cmd.startswith("compress "):
-            sub = cmd[8:].strip()
+            # Parse the subcommand using the lowercased cmd, but keep the
+            # raw (un-lowercased) version for directory paths.
+            sub     = cmd[8:].strip()     # lowercased, for keyword checks
+            raw_sub = raw[9:].strip()     # original case, for dir paths
 
-            if sub in ("", "image"):
+            tokens = sub.split()
+            tokens, quality = _pop_quality(tokens, compress_quality)
+            sub_clean = " ".join(tokens)  # subcommand without any trailing quality
+
+            # compress  /  compress <quality>
+            if sub_clean in ("", "image"):
                 if current_image is None:
                     print("  [!] No image has been opened yet.")
                 elif not _compress.should_compress(current_image):
                     print("  [!] Image doesn't meet compression criteria (too small or already optimised).")
                 else:
                     original_size = os.path.getsize(current_image)
-                    print("  🗜  Compressing current image …", end="", flush=True)
-                    ok = _compress.compress_image(current_image, quality=85, backup=False)
+                    print(f"  🗜  Compressing current image (q{quality}) …", end="", flush=True)
+                    ok = _compress.compress_image(current_image, quality=quality, backup=False)
                     if ok:
                         new_size = os.path.getsize(current_image)
                         saved_mb = (original_size - new_size) / (1024 * 1024)
@@ -973,46 +1322,56 @@ def main():
                     else:
                         print(" failed.")
 
-            elif sub == "folder":
+            # compress folder  /  compress folder <quality>
+            elif sub_clean == "folder":
                 target = folder
-                def _run_compress(path):
-                    print(f"\n  🗜  Compressing folder: {path}")
-                    _compress.process_directory(path, quality=85)
+                def _run_compress(path, _q=quality):
+                    print(f"\n  🗜  Compressing folder (q{_q}): {path}")
+                    _compress.process_directory(path, quality=_q)
                     print(f"\n  ✔  Compression finished: {path}")
                     print("  > ", end="", flush=True)
                 threading.Thread(target=_run_compress, args=(target,), daemon=True).start()
 
-            elif sub.startswith("path "):
-                idx_str = sub[5:].strip()
+            # compress path <#>  /  compress path <#> <quality>
+            elif sub_clean.startswith("path "):
+                idx_str = sub_clean[5:].strip()
                 if idx_str.isdigit():
                     n = int(idx_str) - 1
                     if 0 <= n < len(saved_paths):
                         target = saved_paths[n]
-                        def _run_compress_path(path):
-                            print(f"\n  🗜  Compressing folder [{n+1}]: {path}")
-                            _compress.process_directory(path, quality=85)
+                        def _run_compress_path(path, _n=n, _q=quality):
+                            print(f"\n  🗜  Compressing folder [{_n + 1}] (q{_q}): {path}")
+                            _compress.process_directory(path, quality=_q)
                             print(f"\n  ✔  Compression finished: {path}")
                             print("  > ", end="", flush=True)
                         threading.Thread(target=_run_compress_path, args=(target,), daemon=True).start()
                     else:
                         print(f"  [!] Number out of range (1–{len(saved_paths)}).")
                 else:
-                    print("  [!] Usage: compress path <number>")
+                    print("  [!] Usage: compress path <number> [quality]")
 
-            elif sub.startswith("dir "):
-                target = sub[4:].strip().strip('"')
+            # compress dir <path>  /  compress dir <path> <quality>
+            elif sub_clean.startswith("dir"):
+                # Quality was already popped from tokens; rebuild the dir portion
+                # from raw_sub (preserving original case and spaces in the path),
+                # but strip a trailing quality token if one was consumed.
+                dir_raw = raw_sub
+                if quality != compress_quality:
+                    # A quality was parsed — strip the matching trailing token
+                    dir_raw = dir_raw.rsplit(None, 1)[0] if dir_raw.rsplit(None, 1)[-1].isdigit() else dir_raw
+                target = dir_raw[4:].strip().strip('"') if dir_raw.lower().startswith("dir ") else dir_raw.strip().strip('"')
                 if not os.path.isdir(target):
                     print(f"  [!] Directory not found: {target}")
                 else:
-                    def _run_compress_dir(path):
-                        print(f"\n  🗜  Compressing: {path}")
-                        _compress.process_directory(path, quality=85)
+                    def _run_compress_dir(path, _q=quality):
+                        print(f"\n  🗜  Compressing (q{_q}): {path}")
+                        _compress.process_directory(path, quality=_q)
                         print(f"\n  ✔  Compression finished: {path}")
                         print("  > ", end="", flush=True)
                     threading.Thread(target=_run_compress_dir, args=(target,), daemon=True).start()
 
             else:
-                print("  [?] Usage: compress  |  compress folder  |  compress path <#>  |  compress dir <path>")
+                print("  [?] Usage: compress [q]  |  compress folder [q]  |  compress path <#> [q]  |  compress dir <path> [q]")
 
         # ── Prompt ─────────────────────────────────────────────────────────
         elif cmd == "prompt" or cmd.startswith("prompt "):
@@ -1037,11 +1396,53 @@ def main():
 
         # ── Search ─────────────────────────────────────────────────────────
         elif cmd == "search" or cmd.startswith("search "):
+            if _cycle_thread and _cycle_thread.is_alive():
+                print("  [!] Cannot search while a cycle session is running. Type 'stop' first.")
+                continue
+
+            sub = raw[6:].strip()
+
+            # ── search prev ───────────────────────────────────────────────
+            if sub.lower() == "prev":
+                if current_image is None:
+                    print("  [!] No image has been opened yet.")
+                    continue
+                prev_folder = os.path.dirname(current_image)
+                # Collect all images in the same immediate subfolder
+                with _image_lock:
+                    siblings = [p for p in images if os.path.dirname(p) == prev_folder]
+                if not siblings:
+                    print(f"  [!] No other images found in: {prev_folder}")
+                    continue
+                if opening_mode == "semi-random":
+                    path = choose_semi_random_path(
+                        siblings, folders_used, semi_rand_probability, semi_rand_max_tries
+                    )
+                else:
+                    path = random.choice(siblings)
+                current_image = path
+                name = os.path.relpath(path, folder) if folder else path
+                print(f"  [prev folder]  {name}")
+                open_path_in_firefox(path)
+                if mem_mode:
+                    start_mem_timer(mem_seconds)
+                continue
+
             if not images:
                 print("  [!] No images loaded. Use 'path add <path>' or 'folder <path>'.")
                 continue
 
-            keywords_str = raw[6:].strip()
+            # ── Optional leading max-results number ───────────────────────
+            # If the first token is a positive integer, use it as the result
+            # cap for this search only; the rest are the keywords.
+            # e.g.  search 10 hand pose  →  max=10, keywords=["hand","pose"]
+            #       search hand pose     →  max=default, keywords=["hand","pose"]
+            tokens      = sub.split()
+            local_max   = search_max_results
+            if tokens and tokens[0].isdigit() and int(tokens[0]) > 0:
+                local_max = int(tokens[0])
+                tokens    = tokens[1:]
+            keywords_str = " ".join(tokens)
 
             # Prompt for keywords if not supplied inline
             if not keywords_str:
@@ -1056,20 +1457,19 @@ def main():
                 continue
 
             keywords = keywords_str.split()
-            results  = search_images(images, keywords, search_max_results)
+            results  = search_images(images, keywords, local_max)
 
             if not results:
                 print(f"  [!] No results for: '{keywords_str}'")
                 continue
 
-            print(
-                f"  🔍 {len(results)} result(s) for '{keywords_str}' "
-                f"(max {search_max_results})."
-            )
+            max_label = f"max {local_max}" if local_max != search_max_results else f"max {search_max_results}"
+            print(f"  🔍 {len(results)} result(s) for '{keywords_str}' ({max_label}).")
             print("  Press <Enter> to view each image, or 'stop' to exit search.")
 
             search_idx = 0
             while search_idx < len(results):
+                # ── Open the current result ────────────────────────────────
                 img_path      = results[search_idx]
                 current_image = img_path
                 name          = os.path.relpath(img_path, folder) if folder else img_path
@@ -1077,32 +1477,32 @@ def main():
                 open_path_in_firefox(img_path)
                 if mem_mode:
                     start_mem_timer(mem_seconds)
-
                 search_idx += 1
 
-                # Last result — no further prompt needed
                 if search_idx >= len(results):
-                    print(f"  ✔  End of search results.")
+                    print("  ✔  End of search results.")
                     break
 
-                # Prompt for next action
-                try:
-                    nxt = input("\n(search)> ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    _cancel_timer()
-                    print("\n  [!] Search ended.")
-                    break
+                # ── Prompt loop — only advances to the next image on "" ────
+                while True:
+                    try:
+                        nxt = input("\n(search) > ").strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        _cancel_timer()
+                        print("\n  [!] Search ended.")
+                        search_idx = len(results)   # force outer loop to exit
+                        break
 
-                if nxt == "stop":
-                    _cancel_timer()
-                    print("  ■  Search stopped.")
-                    break
-                elif nxt == "":
-                    continue   # advance to the next result
-                else:
-                    # Anything else: warn and stay on the same index to re-prompt
-                    print(f"  [!] In search mode — press <Enter> for next image or 'stop' to exit.")
-                    search_idx -= 1   # undo the advance so the same image shows again
+                    if nxt == "stop":
+                        _cancel_timer()
+                        print("  ■  Search stopped.")
+                        search_idx = len(results)   # force outer loop to exit
+                        break
+                    elif nxt == "":
+                        break   # advance to the next result
+                    else:
+                        print("  [!] In search mode — press <Enter> for next image or 'stop' to exit.")
+                        # stay in the inner loop; image is NOT re-opened
 
         # ── Scan ───────────────────────────────────────────────────────────
         elif cmd == "scan" or cmd.startswith("scan "):
@@ -1134,7 +1534,7 @@ def main():
                     print(f"  [!] Usage:  scan  |  scan <number>  |  scan <key>")
 
         # ── Paths: list ────────────────────────────────────────────────────
-        elif cmd == "paths":
+        elif cmd in ("paths", "pp"):
             print_paths(saved_paths, path_keys, cache, folder, _sfi[0], prefs.get("default_folder_index", 0))
 
         # ── Paths: subcommands ─────────────────────────────────────────────
@@ -1156,20 +1556,38 @@ def main():
                         print(f"  ✔  Added [{len(saved_paths)}] {new_path}")
                         print_paths(saved_paths, path_keys, cache, folder, _sfi[0], prefs.get("default_folder_index", 0))
 
-            # path del <#>
+            # path del <#|key>
             elif rest_lower.startswith("del "):
                 idx_str = rest[4:].strip()
-                try:
-                    n = int(idx_str) - 1
+                if not idx_str:
+                    print("  [!] Usage: path del <#|key>")
+                else:
+                    n = _resolve_folder_arg(idx_str, saved_paths, path_keys)
                     if 0 <= n < len(saved_paths):
                         removed = saved_paths.pop(n)
                         path_keys.pop(removed, None)
 
-                        # Adjust persistent indices
+                        # When the active folder is removed, immediately clear
+                        # the image list so <Enter> can't keep opening its stale
+                        # images, then auto-switch to folder [1] if one exists.
+                        if folder == removed:
+                            with _image_lock:
+                                images.clear()
+                                index = 0
+                            folder = ""
+                            current_image = None
+                            if saved_paths:
+                                print(f"  ⚠  Active folder was removed — switching to [1] {saved_paths[0]}")
+                                load(saved_paths[0])
+                            else:
+                                print("  ⚠  Active folder was removed and no folders remain. Add one with: path add <path>")
+
+                        # Adjust persistent indices; print a notice when one resets.
                         def _adjust_index(key: str):
                             v = prefs.get(key, 0)
                             if v == n:
                                 prefs[key] = 0
+                                print(f"  ℹ  '{key}' reset to [1].")
                             elif v > n:
                                 prefs[key] = v - 1
 
@@ -1196,25 +1614,23 @@ def main():
                         else:
                             print_paths(saved_paths, path_keys, cache, folder, _sfi[0], prefs.get("default_folder_index", 0))
                     else:
-                        print(f"  [!] Number out of range (1–{len(saved_paths)}).")
-                except ValueError:
-                    print("  [!] Usage: path del <number>")
+                        print(_bad_folder_arg(idx_str))
 
-            # path swap <#> <#>
+            # path swap <#|key> <#|key>
             elif rest_lower.startswith("swap "):
-                parts = rest[5:].strip().split()
-                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                    a, b = int(parts[0]) - 1, int(parts[1]) - 1
+                parts = rest[5:].strip().split(None, 1)
+                if len(parts) == 2:
+                    a = _resolve_folder_arg(parts[0], saved_paths, path_keys)
+                    b = _resolve_folder_arg(parts[1], saved_paths, path_keys)
                     if not (0 <= a < len(saved_paths)):
-                        print(f"  [!] Number out of range (1–{len(saved_paths)}).")
+                        print(_bad_folder_arg(parts[0]))
                     elif not (0 <= b < len(saved_paths)):
-                        print(f"  [!] Number out of range (1–{len(saved_paths)}).")
+                        print(_bad_folder_arg(parts[1]))
                     elif a == b:
                         print("  [!] Can't swap a folder with itself.")
                     else:
                         saved_paths[a], saved_paths[b] = saved_paths[b], saved_paths[a]
 
-                        # Keep all index references pointing at the same logical folder
                         def _swap_index(key: str):
                             v = prefs.get(key, 0)
                             if v == a:
@@ -1234,33 +1650,30 @@ def main():
                         print(f"  ✔  Swapped [{a+1}] and [{b+1}].")
                         print_paths(saved_paths, path_keys, cache, folder, _sfi[0], prefs.get("default_folder_index", 0))
                 else:
-                    print("  [!] Usage: path swap <#> <#>")
+                    print("  [!] Usage: path swap <#|key> <#|key>")
 
-            # path rename <#> <new_path>
+            # path rename <#|key> <new_path>
             elif rest_lower.startswith("rename "):
                 parts = rest_orig[7:].strip().split(None, 1)
                 if len(parts) == 2:
-                    try:
-                        n        = int(parts[0]) - 1
-                        new_path = parts[1].strip().strip('"')
-                        if 0 <= n < len(saved_paths):
-                            old = saved_paths[n]
-                            saved_paths[n] = new_path
-                            if old in path_keys:
-                                path_keys[new_path] = path_keys.pop(old)
-                            save_paths(saved_paths, path_keys, prefs)
-                            if old in cache:
-                                del cache[old]
-                                save_cache(cache)
-                            print(f"  ✔  [{n+1}] {old}  →  {new_path}")
-                            print(f"  ℹ  Old cache cleared. Run 'scan {n+1}' to scan the new path.")
-                            print_paths(saved_paths, path_keys, cache, folder, _sfi[0], prefs.get("default_folder_index", 0))
-                        else:
-                            print(f"  [!] Number out of range (1–{len(saved_paths)}).")
-                    except ValueError:
-                        print("  [!] Usage: path rename <number> <new path>")
+                    n        = _resolve_folder_arg(parts[0], saved_paths, path_keys)
+                    new_path = parts[1].strip().strip('"')
+                    if 0 <= n < len(saved_paths):
+                        old = saved_paths[n]
+                        saved_paths[n] = new_path
+                        if old in path_keys:
+                            path_keys[new_path] = path_keys.pop(old)
+                        save_paths(saved_paths, path_keys, prefs)
+                        if old in cache:
+                            del cache[old]
+                            save_cache(cache)
+                        print(f"  ✔  [{n+1}] {old}  →  {new_path}")
+                        print(f"  ℹ  Old cache cleared. Run 'scan {n+1}' to scan the new path.")
+                        print_paths(saved_paths, path_keys, cache, folder, _sfi[0], prefs.get("default_folder_index", 0))
+                    else:
+                        print(_bad_folder_arg(parts[0]))
                 else:
-                    print("  [!] Usage: path rename <number> <new path>")
+                    print("  [!] Usage: path rename <#|key> <new path>")
 
             # path <#> — switch to folder by number
             elif rest.isdigit():
@@ -1401,6 +1814,10 @@ def main():
             else:
                 mem_seconds = default_mem_time
             print(f"  ► Memory mode — {fmt_time(mem_seconds)} per image.")
+            # Always open the next image when entering/re-entering mem mode.
+            # The whole point of the command is: show image → cover it after
+            # <time>. Using start_mem_timer alone (without show_next) would
+            # fire a blank tab with nothing to cover.
             show_next()
 
         # ── Clean ──────────────────────────────────────────────────────────
@@ -1409,16 +1826,17 @@ def main():
 
             if sub == "":
                 _clean_directory(folder)
-            elif sub.isdigit():
-                n = int(sub) - 1
-                if 0 <= n < len(saved_paths):
-                    _clean_directory(saved_paths[n])
-                else:
-                    print(f"  [!] Number out of range (1–{len(saved_paths)}).")
             elif sub.lower().startswith("path "):
                 _clean_directory(sub[5:].strip().strip('"'))
             else:
-                print("  [?] Usage:  clean  |  clean <#>  |  clean path <dir>")
+                # Accept a number or a key
+                n = _resolve_folder_arg(sub, saved_paths, path_keys)
+                if 0 <= n < len(saved_paths):
+                    _clean_directory(saved_paths[n])
+                elif sub:
+                    print(_bad_folder_arg(sub))
+                else:
+                    print("  [?] Usage:  clean  |  clean <#|key>  |  clean path <dir>")
 
         # ── Enter → next image ─────────────────────────────────────────────
         elif cmd == "":
