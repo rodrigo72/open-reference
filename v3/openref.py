@@ -514,7 +514,7 @@ class CancellableTimer(threading.Thread):
         if not self.cancel_flag:
             open_black_tab()
             print(f"\n  ● Time's up! Black tab opened.")
-            print("\n> ", end="", flush=True)
+            print("\n> ", end="", flush=True) 
 
 
 def start_mem_timer(seconds: int):
@@ -593,87 +593,84 @@ class CycleSession(threading.Thread):
 HELP_TEXT = """
 Commands
 ────────────────────────────────────────────────────────
-  <Enter>              → next image (random or semi-random)
-  mem                  → memory mode (uses default time)
-  mem 30s / mem 1m30s  → memory mode with custom time
-  normal               → switch back to normal mode
-  shuffle              → reshuffle the image list
-  info                 → show current session settings
 
-  random               → random opening mode (default)
-  semi                 → semi-random opening mode
+  <Enter>               → next image (random or semi-random)
+  mem                   → memory mode (uses default time)
+  mem 30s / mem 1m30s   → memory mode with custom time
+  normal                → switch back to normal mode
+  shuffle               → reshuffle the image list
+  info                  → show current session settings
+
+  random / rand         → random opening mode (default)
+  semi                  → semi-random opening mode
                          (prefers subfolders not yet seen)
 
   cycle [interval] [total]
-                       → gesture-drawing session: auto-advance
-                         images every <interval>, stop after
-                         <total> (prompts if omitted)
-                         e.g.  cycle 30s 10m
-                               cycle 2m 1h
-  stop                 → stop an active cycle session
+                        → gesture-drawing session: auto-advance
+                          images every <interval>, stop after
+                          <total> (prompts if omitted)
+                          e.g.  cycle 30s 10m, or cycle 2m 1h
+  stop                  → stop an active cycle session
 
-  search <keywords>    → search loaded images by filename/path
-                         keywords; opens matches one by one.
-                         Press <Enter> to advance, 'stop' to
-                         exit search mode.
-                         e.g.  search hand pose
-                               search 10 hand pose  (limit to 10)
-  search prev          → open a random/semi-random image from
-                         the same subfolder as the last image
+  search [n] <keywords> → search loaded images by filename/path
+                          keywords; opens matches one by one.
+                          Press <Enter> to advance, 'stop' to
+                          exit search mode.
+                          e.g.  search hand pose (default max results)
+                                search 10 hand pose  (limit to 10)
+  search prev           → open a random/semi-random image from
+                          the same subfolder as the last image
 
-  save                 → copy current image to the save folder
+  save                  → copy current image to the save folder
 
-  compress [q]         → compress current image
-  compress folder [q]  → compress all images in current folder
-  compress path <#> [q]→ compress a saved folder by number
-  compress dir <p> [q] → compress any folder by path
-                         q = quality 1–100 (default from settings)
-                         e.g.  compress 75
-                               compress folder 60
-                               compress path 2 80
+  compress [q]          → compress current image
+  compress folder [q]   → compress all images in current folder
+  compress path <#> [q] → compress a saved folder by number
+  compress dir <p> [q]  → compress any folder by path
+                          q = quality 1–100 (default from settings)
 
-  prompt               → random drawing prompt
-  prompt daily         → full daily plan
-  prompt list          → list all prompt types
-  prompt <type>        → specific prompt (see 'prompt list')
+  prompt                → random drawing prompt
+  prompt daily          → full daily plan
+  prompt list           → list all prompt types
+  prompt <type>         → specific prompt (see 'prompt list')
 
-  paths                → list all saved folders
-  path <#|key>         → switch to folder by number or key
-  path add <path>      → add & scan a new folder
-  path del <#|key>     → remove folder + its cache
-  path rename <#|key> <p> → replace a saved path
-  path swap <#|key> <#|key> → swap two folders
+  paths / pp                  → list all saved folders
+  path <#|key>                → switch to folder by number or key
+  path add <path>             → add & scan a new folder
+  path del <#|key>            → remove folder + its cache
+  path rename <#|key> <p>     → replace a saved path
+  path swap <#|key> <#|key>   → swap two folders
+  path insert <#|key> <#|key> → move a folder to another position,
+                                shifting the folders in between
+                                e.g.  path insert 3 7
 
-  key <#> <key>        → assign a shortcut key to a folder
-  key del <#>          → remove the key from a folder
-  key rename <#> <key> → rename a folder's key
-  key swap <#> <#>     → swap keys between two folders
+  key <#> <key>         → assign a shortcut key to a folder
+  key del <#>           → remove the key from a folder
+  key rename <#> <key>  → rename a folder's key
+  key swap <#> <#>      → swap keys between two folders
 
-  scan                 → re-scan current folder
-  scan <#|key>         → re-scan a specific saved folder
+  scan                  → re-scan current folder
+  scan <#|key>          → re-scan a specific saved folder
 
-  clean                → check current folder for non-media files
-  clean <#|key>        → check a saved folder by number or key
-  clean path <path>    → check any folder by path
+  clean                 → check current folder for non-media files
+  clean <#|key>         → check a saved folder by number or key
+  clean path <path>     → check any folder by path
 
-  set mem <time>       → set default mem time (persistent)
-                         e.g.  set mem 45s  |  set mem 2m
-  set search <n>       → set max search results (persistent)
-                         e.g.  set search 10  |  set search 50
-  set compress <n>     → set default compress quality (persistent)
-                         e.g.  set compress 75  |  set compress 90
-  set semi <prob>      → set semi-random repeat probability (persistent)
-                         0.0 = never reuse a subfolder until all seen
-                         1.0 = always accept any subfolder (= random)
-                         e.g.  set semi 0.1  |  set semi 0.5
-  set folder <#|key>   → set default startup folder (persistent)
-  set save   <#|key>   → set default save folder (persistent)
-  set                  → show current defaults & loaded settings
+  set mem <time>        → set default mem time (persistent)
+  set search <n>        → set max search results (persistent)
+  set compress <n>      → set default compress quality (persistent)
+  set semi <prob>       → set semi-random repeat probability (persistent)
+                          0.0 = never reuse a subfolder until all seen
+                          1.0 = always accept any subfolder (= random)
+  set folder <#|key>    → set default startup folder (persistent)
+  set save   <#|key>    → set default save folder (persistent)
+  set                   → show current defaults & loaded settings
 
-  folder <path>        → load folder temporarily (not added)
-  help                 → show this message
-  clear                → clear the screen
-  q / quit / exit      → quit
+  folder <path>         → load folder temporarily (not added)
+  help / h              → show this message
+  clear                 → clear the screen
+  q / quit / exit       → quit
+
 ────────────────────────────────────────────────────────
 Usage:  python openref.py [settings.json]
 ────────────────────────────────────────────────────────
@@ -723,173 +720,6 @@ def do_scan(path: str, cache: dict[str, list[str]]) -> list[str] | None:
     return found
 
 
-# ── Tab completion ─────────────────────────────────────────────────────────────
-
-def _setup_tab_completion(saved_paths: list[str], path_keys: dict[str, str]) -> bool:
-    """
-    Register a context-aware Tab completer using readline (Unix) or
-    pyreadline3 (Windows).  Returns True if completion was set up, False if the
-    required library is not available.
-
-    The completer closes over *saved_paths* and *path_keys* by reference, so it
-    always sees the live state even after folders are added or removed.
-    """
-    try:
-        import readline as _rl
-    except ImportError:
-        try:
-            import pyreadline3 as _rl      # type: ignore
-        except ImportError:
-            return False
-
-    # ── Command / subcommand tables ────────────────────────────────────────
-    _TOP: list[str] = [
-        "mem", "normal", "random", "semi", "shuffle", "info", "stop",
-        "save", "compress", "prompt", "search", "scan", "paths", "path",
-        "key", "folder", "clean", "set", "cycle", "help", "clear",
-        "quit", "exit", "q",
-    ]
-    _COMPRESS_SUBS  = ["folder", "path", "dir"]
-    _PATH_SUBS      = ["add", "del", "swap", "rename"]
-    _KEY_SUBS       = ["del", "rename", "swap"]
-    _SET_SUBS       = ["mem", "search", "compress", "semi", "folder", "save"]
-    _PROMPT_SUBS    = ["list"] + list(_PROMPT_CMDS.keys())
-    _QUALITIES      = ["60", "70", "75", "80", "85", "90", "95"]
-
-    class _Completer:
-        def __init__(self):
-            self._matches: list[str] = []
-
-        # ── readline entry-point ───────────────────────────────────────────
-        def complete(self, text: str, state: int) -> str | None:
-            if state == 0:
-                line = _rl.get_line_buffer()
-                self._matches = self._build(line, text)
-            try:
-                return self._matches[state]
-            except IndexError:
-                return None
-
-        # ── Dynamic folder refs: numbers + keys ───────────────────────────
-        @staticmethod
-        def _folder_refs() -> list[str]:
-            refs = [str(i + 1) for i in range(len(saved_paths))]
-            for p in saved_paths:
-                k = path_keys.get(p)
-                if k:
-                    refs.append(k)
-            return refs
-
-        @staticmethod
-        def _nums() -> list[str]:
-            return [str(i + 1) for i in range(len(saved_paths))]
-
-        # ── Filter candidates by current word ─────────────────────────────
-        @staticmethod
-        def _m(candidates: list[str], prefix: str) -> list[str]:
-            p = prefix.lower()
-            return [c for c in candidates if c.lower().startswith(p)]
-
-        # ── Main completion logic ──────────────────────────────────────────
-        def _build(self, line: str, text: str) -> list[str]:
-            tokens = line.split()
-            # Are we still completing the first word?
-            if not tokens or (len(tokens) == 1 and not line.endswith(" ")):
-                return self._m(_TOP, text)
-
-            cmd = tokens[0].lower()
-            # n_full = number of tokens already fully committed
-            # (i.e. the current text-under-cursor does NOT count)
-            n_full = len(tokens) if line.endswith(" ") else len(tokens) - 1
-
-            m  = self._m
-            fr = self._folder_refs
-            nu = self._nums
-
-            # ── compress ──────────────────────────────────────────────────
-            if cmd == "compress":
-                if n_full == 1:
-                    return m(_COMPRESS_SUBS, text)
-                sub = tokens[1].lower()
-                if sub == "path":
-                    if n_full == 2:
-                        return m(fr(), text)
-                    if n_full == 3:
-                        return m(_QUALITIES, text)
-                if sub in ("folder", "dir"):
-                    # dir takes a free-form path; offer quality as final token
-                    return m(_QUALITIES, text)
-                # bare "compress <quality>"
-                return m(_QUALITIES, text)
-
-            # ── path ──────────────────────────────────────────────────────
-            elif cmd in ("path", "p"):
-                if n_full == 1:
-                    return m(_PATH_SUBS + fr(), text)
-                sub = tokens[1].lower()
-                if sub in ("del", "rename") and n_full == 2:
-                    return m(fr(), text)
-                if sub == "swap" and n_full in (2, 3):
-                    return m(fr(), text)
-                return []
-
-            # ── key ───────────────────────────────────────────────────────
-            elif cmd == "key":
-                if n_full == 1:
-                    return m(_KEY_SUBS + nu(), text)
-                sub = tokens[1].lower()
-                if sub in ("del", "rename") and n_full == 2:
-                    return m(nu(), text)
-                if sub == "swap" and n_full in (2, 3):
-                    return m(nu(), text)
-                return []
-
-            # ── set ───────────────────────────────────────────────────────
-            elif cmd == "set":
-                if n_full == 1:
-                    return m(_SET_SUBS, text)
-                sub = tokens[1].lower()
-                if sub in ("folder", "save") and n_full == 2:
-                    return m(fr(), text)
-                return []
-
-            # ── scan ──────────────────────────────────────────────────────
-            elif cmd == "scan":
-                if n_full == 1:
-                    return m(fr(), text)
-                return []
-
-            # ── clean ─────────────────────────────────────────────────────
-            elif cmd == "clean":
-                if n_full == 1:
-                    return m(["path"] + fr(), text)
-                return []
-
-            # ── search ────────────────────────────────────────────────────
-            elif cmd == "search":
-                if n_full == 1:
-                    return m(["prev"], text)
-                return []
-
-            # ── prompt ────────────────────────────────────────────────────
-            elif cmd == "prompt":
-                if n_full == 1:
-                    return m(_PROMPT_SUBS, text)
-                return []
-
-            return []
-
-    completer = _Completer()
-    _rl.set_completer(completer.complete)
-    # Only split on spaces so folder keys, paths, etc. are passed whole
-    _rl.set_completer_delims(" ")
-    try:
-        _rl.parse_and_bind("tab: complete")
-    except Exception:
-        pass
-    return True
-
-
 def main():
     global _cycle_thread, FIREFOX_PATH, IMAGE_EXTENSIONS
 
@@ -902,12 +732,6 @@ def main():
     # ── Load paths & user prefs ────────────────────────────────────────────
     saved_paths, path_keys, prefs = load_saved_paths()
     cache: dict[str, list[str]] = load_cache()
-
-    # Tab completion — set up early so it works even at the startup prompt.
-    # The completer closes over saved_paths and path_keys by reference, so it
-    # always reflects the current folder list without needing to be re-registered.
-    if not _setup_tab_completion(saved_paths, path_keys):
-        print("  ℹ  Tab completion unavailable — install pyreadline3 for Windows support.")
 
     default_mem_time:       int   = int(settings.get("default_mem_time",         _FALLBACK_MEM_TIME))
     search_max_results:     int   = int(settings.get("search_max_results",       _FALLBACK_SEARCH_RESULTS))
@@ -970,7 +794,7 @@ def main():
         return True
 
     print("=" * 56)
-    print("  Ref Viewer  —  Drawing Practice Tool")
+    print("  Openref —  Drawing Practice Tool")
     print("=" * 56)
     print(HELP_TEXT)
 
@@ -1106,7 +930,7 @@ def main():
                 print("  [!] No active cycle session.")
 
         # ── Opening mode: random ───────────────────────────────────────────
-        elif cmd == "random":
+        elif cmd in ("random", "rand"):
             opening_mode = "random"
             print("  ► Opening mode: random.")
 
@@ -1329,7 +1153,7 @@ def main():
                     print(f"\n  🗜  Compressing folder (q{_q}): {path}")
                     _compress.process_directory(path, quality=_q)
                     print(f"\n  ✔  Compression finished: {path}")
-                    print("  > ", end="", flush=True)
+                    print("\n> ", end="", flush=True)
                 threading.Thread(target=_run_compress, args=(target,), daemon=True).start()
 
             # compress path <#>  /  compress path <#> <quality>
@@ -1652,6 +1476,43 @@ def main():
                 else:
                     print("  [!] Usage: path swap <#|key> <#|key>")
 
+            # path insert <#|key> <#|key>
+            elif rest_lower.startswith("insert "):
+                parts = rest[7:].strip().split(None, 1)
+                if len(parts) == 2:
+                    src = _resolve_folder_arg(parts[0], saved_paths, path_keys)
+                    dst = _resolve_folder_arg(parts[1], saved_paths, path_keys)
+                    if not (0 <= src < len(saved_paths)):
+                        print(_bad_folder_arg(parts[0]))
+                    elif not (0 <= dst < len(saved_paths)):
+                        print(_bad_folder_arg(parts[1]))
+                    elif src == dst:
+                        print("  [!] Source and destination are the same folder.")
+                    else:
+                        item = saved_paths.pop(src)
+                        saved_paths.insert(dst, item)
+
+                        # Update all tracked indices to reflect the move.
+                        # Items between src and dst shift by ±1; src itself lands at dst.
+                        def _adjust_for_insert(v: int) -> int:
+                            if v == src:
+                                return dst
+                            if src < dst and src < v <= dst:
+                                return v - 1
+                            if src > dst and dst <= v < src:
+                                return v + 1
+                            return v
+
+                        for key in ("default_folder_index", "default_save_index"):
+                            prefs[key] = _adjust_for_insert(prefs.get(key, 0))
+                        _sfi[0] = _adjust_for_insert(_sfi[0])
+
+                        save_paths(saved_paths, path_keys, prefs)
+                        print(f"  ✔  Moved [{src+1}] to position [{dst+1}].")
+                        print_paths(saved_paths, path_keys, cache, folder, _sfi[0], prefs.get("default_folder_index", 0))
+                else:
+                    print("  [!] Usage: path insert <#|key> <#|key>")
+
             # path rename <#|key> <new_path>
             elif rest_lower.startswith("rename "):
                 parts = rest_orig[7:].strip().split(None, 1)
@@ -1696,7 +1557,7 @@ def main():
                 print_paths(saved_paths, path_keys, cache, folder, _sfi[0], prefs.get("default_folder_index", 0))
 
             else:
-                print("  [?] Unknown path subcommand. Options: add, del, rename, swap, or a number/key.")
+                print("  [?] Unknown path subcommand. Options: add, del, rename, swap, insert, or a number/key.")
 
         # ── Key management ─────────────────────────────────────────────────
         elif cmd.startswith("key"):
