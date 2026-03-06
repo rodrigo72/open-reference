@@ -9,10 +9,10 @@ import webbrowser
 import threading
 import time
 import shutil
+from datetime import datetime, date, timedelta
+from collections import Counter
 import random_prompt as _prompts
 import compress_images as _compress
-
-
 
 # map of subcommand -> (function_name, display_label)
 _PROMPT_CMDS: dict[str, tuple[str, str]] = {
@@ -50,6 +50,10 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PATHS_FILE  = os.path.join(_SCRIPT_DIR, "ref_paths.json")
 CACHE_FILE  = os.path.join(_SCRIPT_DIR, "ref_cache.pkl")
 # cache schema: dict[str, list[str]]  →  { folder_path: [img_path, ...] }
+LOG_FILE    = os.path.join(_SCRIPT_DIR, "ref_log.tsv")
+
+# Temp HTML file written when grayscale mode is active
+_GRAYSCALE_HTML = os.path.join(_SCRIPT_DIR, "_grayscale_tmp.html")
 
 REGISTERED_BROWSERS: set = set()
 
@@ -275,11 +279,548 @@ def open_path_in_firefox(path: str):
     webbrowser.get("firefox").open(img_url)
 
 
+def open_path_with_css(path: str, grayscale: bool, flip: str | None):
+    """
+    Open *path* in Firefox via a temporary HTML wrapper, applying any
+    combination of CSS grayscale and/or flip transforms.
+
+    flip  – None | "h" (scaleX(-1), mirror left-right)
+           |       "v" (scaleY(-1), mirror up-down)
+
+    Falls back to plain Firefox if the temp file can't be written.
+    The temp file (_GRAYSCALE_HTML) is overwritten on every call.
+    """
+    if not os.path.exists(path):
+        print(f"  [!] File not found: {path}")
+        return
+
+    img_url = "file:///" + urllib.parse.quote(os.path.abspath(path).replace("\\", "/"))
+
+    css_filter    = "grayscale(1)" if grayscale else ""
+    css_transform = {"h": "scaleX(-1)", "v": "scaleY(-1)"}.get(flip or "", "")
+
+    filter_rule    = f"filter: {css_filter};"       if css_filter    else ""
+    transform_rule = f"transform: {css_transform};" if css_transform else ""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  html, body {{
+    width: 100%; height: 100%;
+    background: #222222;
+    overflow: hidden;
+  }}
+  body {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }}
+  img {{
+    max-width: 100vw;
+    max-height: 100vh;
+    object-fit: contain;
+    {filter_rule}
+    {transform_rule}
+  }}
+</style>
+</head>
+<body>
+<img src="{img_url}">
+</body>
+</html>"""
+
+    try:
+        with open(_GRAYSCALE_HTML, "w", encoding="utf-8") as f:
+            f.write(html)
+    except Exception as e:
+        print(f"  [!] Could not write HTML wrapper: {e}")
+        open_path_in_firefox(path)
+        return
+
+    html_url = "file:///" + urllib.parse.quote(_GRAYSCALE_HTML.replace("\\", "/"))
+    _ensure_firefox_registered()
+    webbrowser.get("firefox").open(html_url)
+
+
+def open_image(path: str, grayscale: bool, flip: str | None = None):
+    """
+    Open an image in Firefox, applying grayscale and/or flip as needed.
+    Uses the HTML wrapper whenever either effect is active; raw Firefox otherwise.
+    """
+    if grayscale or flip:
+        open_path_with_css(path, grayscale, flip)
+    else:
+        open_path_in_firefox(path)
+
+
+# ── Palette extraction ─────────────────────────────────────────────────────────
+
+def _extract_palette(path: str, n_colors: int = 6) -> list[tuple[int, int, int]]:
+    """
+    Return *n_colors* dominant RGB colours from *path* using k-means clustering.
+    Sorts result from darkest to lightest (by perceived luminance).
+    Returns an empty list on any error.
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+        from sklearn.cluster import KMeans
+
+        img = Image.open(path).convert("RGB")
+        # Downsample for speed — 200×200 is plenty for colour extraction
+        img.thumbnail((200, 200), Image.LANCZOS)
+        pixels = np.array(img).reshape(-1, 3).astype(float)
+
+        km = KMeans(n_clusters=n_colors, n_init=8, random_state=42)
+        km.fit(pixels)
+
+        # Weight each cluster by how many pixels it captured
+        labels   = km.labels_
+        centers  = km.cluster_centers_
+        counts   = np.bincount(labels, minlength=n_colors)
+        order    = np.argsort(-counts)          # most-common first
+        colors   = [tuple(int(c) for c in centers[i]) for i in order]
+
+        # Re-sort by perceived luminance (dark → light) for a clean strip
+        def _lum(rgb):
+            r, g, b = [x / 255 for x in rgb]
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+        colors.sort(key=_lum)
+        return colors
+
+    except Exception as e:
+        print(f"  [!] Palette extraction failed: {e}")
+        return []
+
+
+def open_palette(path: str, n_colors: int, grayscale: bool):
+    """
+    Open *path* in Firefox with a vertical colour-swatch panel on the right.
+    Each swatch shows the hex code and RGB values.
+    Respects grayscale mode (applies the CSS filter to the image only).
+    """
+    if not os.path.exists(path):
+        print(f"  [!] File not found: {path}")
+        return
+
+    kind = "values" if grayscale else "colours"
+    name = os.path.basename(path)
+    print(f"  🎨 Palette ({n_colors} {kind}) — {name} … ", end="", flush=True)
+    colors = _extract_palette(path, n_colors)
+    if not colors:
+        print("failed — opening image normally.")
+        open_image(path, grayscale)
+        return
+    print("done.")
+
+    img_url = "file:///" + urllib.parse.quote(os.path.abspath(path).replace("\\", "/"))
+    filter_rule = "filter: grayscale(1);" if grayscale else ""
+
+    # Build swatch HTML blocks
+    # In grayscale mode: convert each colour to its luminance value and show
+    # L XX% labels instead — turns the palette into a value-reading tool.
+    swatch_items = []
+    for r, g, b in colors:
+        lum = 0.2126 * r/255 + 0.7152 * g/255 + 0.0722 * b/255
+        if grayscale:
+            v         = int(round(lum * 255))
+            bg_col    = f"rgb({v},{v},{v})"
+            lum_pct   = int(round(lum * 100))
+            txt_color = "#111" if lum > 0.45 else "#eee"
+            swatch_items.append(f"""
+        <div class="swatch" style="background:{bg_col};">
+          <span class="label" style="color:{txt_color};">
+            <strong>L&nbsp;{lum_pct}%</strong>
+          </span>
+        </div>""")
+        else:
+            hex_col   = f"#{r:02X}{g:02X}{b:02X}"
+            txt_color = "#111" if lum > 0.45 else "#eee"
+            swatch_items.append(f"""
+        <div class="swatch" style="background:{hex_col};">
+          <span class="label" style="color:{txt_color};">
+            <strong>{hex_col}</strong><br>
+            <small>{r}&nbsp;{g}&nbsp;{b}</small>
+          </span>
+        </div>""")
+
+    swatches_html = "\n".join(swatch_items)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  html, body {{
+    width: 100%; height: 100%;
+    background: #222222;
+    overflow: hidden;
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+  }}
+  #img-pane {{
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    min-width: 0;
+  }}
+  #img-pane img {{
+    max-width: 100%;
+    max-height: 100vh;
+    object-fit: contain;
+    {filter_rule}
+  }}
+  #palette {{
+    flex: 0 0 110px;
+    display: flex;
+    flex-direction: column;
+    border-left: 2px solid #111;
+  }}
+  .swatch {{
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    cursor: default;
+    transition: flex 0.15s;
+  }}
+  .swatch:hover {{ flex: 2 1 0; }}
+  .label {{
+    font-family: monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+    pointer-events: none;
+  }}
+</style>
+</head>
+<body>
+  <div id="img-pane">
+    <img src="{img_url}">
+  </div>
+  <div id="palette">
+    {swatches_html}
+  </div>
+</body>
+</html>"""
+
+    try:
+        with open(_GRAYSCALE_HTML, "w", encoding="utf-8") as f:
+            f.write(html)
+    except Exception as e:
+        print(f"  [!] Could not write palette HTML: {e}")
+        open_image(path, grayscale)
+        return
+
+    html_url = "file:///" + urllib.parse.quote(_GRAYSCALE_HTML.replace("\\", "/"))
+    _ensure_firefox_registered()
+    webbrowser.get("firefox").open(html_url)
+
+
+# ── Grid overlay ───────────────────────────────────────────────────────────────
+
+def open_grid(path: str, divisions: int, grayscale: bool, flip: str | None):
+    """
+    Open *path* in Firefox with an SVG rule-of-thirds (or N×N) grid overlay.
+    *divisions* = number of rows/columns (default 3 = rule of thirds).
+    Respects grayscale and flip.
+    """
+    if not os.path.exists(path):
+        print(f"  [!] File not found: {path}")
+        return
+
+    img_url = "file:///" + urllib.parse.quote(os.path.abspath(path).replace("\\", "/"))
+
+    filter_rule    = "filter: grayscale(1);"       if grayscale else ""
+    _flip_map      = {'h': 'scaleX(-1)', 'v': 'scaleY(-1)'}
+    transform_rule = f"transform: {_flip_map.get(flip or '', '')};" if flip else ""
+
+    # Build SVG lines as percentages so they scale with the image
+    step    = 100 / divisions
+    lines   = []
+    for i in range(1, divisions):
+        pct = step * i
+        # vertical line
+        lines.append(
+            f'<line x1="{pct}%" y1="0" x2="{pct}%" y2="100%" '
+            f'stroke="rgba(255,255,255,0.55)" stroke-width="1"/>'
+        )
+        lines.append(
+            f'<line x1="{pct}%" y1="0" x2="{pct}%" y2="100%" '
+            f'stroke="rgba(0,0,0,0.35)" stroke-width="1" stroke-dasharray="4,4"/>'
+        )
+        # horizontal line
+        lines.append(
+            f'<line x1="0" y1="{pct}%" x2="100%" y2="{pct}%" '
+            f'stroke="rgba(255,255,255,0.55)" stroke-width="1"/>'
+        )
+        lines.append(
+            f'<line x1="0" y1="{pct}%" x2="100%" y2="{pct}%" '
+            f'stroke="rgba(0,0,0,0.35)" stroke-width="1" stroke-dasharray="4,4"/>'
+        )
+
+    svg_content   = "\n    ".join(lines)
+    grid_label    = "Rule of Thirds" if divisions == 3 else f"{divisions}×{divisions} Grid"
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  html, body {{
+    width: 100%; height: 100%;
+    background: #222222;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }}
+  #frame {{
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    max-width: 100vw;
+    max-height: 100vh;
+  }}
+  #frame img {{
+    display: block;
+    max-width: 100vw;
+    max-height: 100vh;
+    object-fit: contain;
+    {filter_rule}
+    {transform_rule}
+  }}
+  #grid-svg {{
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }}
+  #grid-label {{
+    position: fixed;
+    bottom: 8px;
+    right: 12px;
+    font-family: monospace;
+    font-size: 11px;
+    color: rgba(255,255,255,0.5);
+    text-shadow: 0 1px 3px #000;
+    pointer-events: none;
+  }}
+</style>
+</head>
+<body>
+  <div id="frame">
+    <img src="{img_url}">
+    <svg id="grid-svg" xmlns="http://www.w3.org/2000/svg">
+    {svg_content}
+    </svg>
+  </div>
+  <div id="grid-label">{grid_label}</div>
+</body>
+</html>"""
+
+    try:
+        with open(_GRAYSCALE_HTML, "w", encoding="utf-8") as f:
+            f.write(html)
+    except Exception as e:
+        print(f"  [!] Could not write grid HTML: {e}")
+        open_image(path, grayscale, flip)
+        return
+
+    html_url = "file:///" + urllib.parse.quote(_GRAYSCALE_HTML.replace("\\", "/"))
+    _ensure_firefox_registered()
+    webbrowser.get("firefox").open(html_url)
+
+
 def open_black_tab():
     # Always ensure Firefox is registered before opening a tab — this can be
     # called from background threads before any image has been shown.
     _ensure_firefox_registered()
     webbrowser.get("firefox").open("about:newtab", new=2)
+
+
+# ── Session log ───────────────────────────────────────────────────────────────
+
+def log_entry(path: str, opening_mode: str, display_mode: str, duration: int):
+    """
+    Append one line to the session log.
+    Format (pipe-separated):  ISO-timestamp | path | opening_mode | display_mode | duration_s
+    This is a fire-and-forget call — any error is silently ignored so it never
+    slows down or disrupts normal use.
+    """
+    try:
+        ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{ts}|{path}|{opening_mode}|{display_mode}|{duration}\n")
+    except Exception:
+        pass
+
+
+def _read_log() -> list[dict]:
+    """
+    Parse the log file into a list of dicts.
+    Silently skips malformed lines.
+    """
+    entries = []
+    if not os.path.exists(LOG_FILE):
+        return entries
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.rstrip("\n").split("|")
+                if len(parts) != 5:
+                    continue
+                ts_str, path, omode, dmode, dur_str = parts
+                try:
+                    entries.append({
+                        "ts":       datetime.fromisoformat(ts_str),
+                        "date":     datetime.fromisoformat(ts_str).date(),
+                        "path":     path,
+                        "omode":    omode,
+                        "dmode":    dmode,
+                        "duration": int(dur_str),
+                    })
+                except (ValueError, OverflowError):
+                    continue
+    except Exception:
+        pass
+    return entries
+
+
+def print_stats():
+    entries = _read_log()
+    if not entries:
+        print("  [!] No session log found yet. Images you open will be recorded automatically.")
+        return
+
+    today     = date.today()
+    week_ago  = today - timedelta(days=6)   # last 7 days including today
+
+    today_entries = [e for e in entries if e["date"] == today]
+    week_entries  = [e for e in entries if e["date"] >= week_ago]
+
+    total_count = len(entries)
+    today_count = len(today_entries)
+    week_count  = len(week_entries)
+
+    # Total logged time (only mem/cycle entries have a meaningful duration)
+    total_secs = sum(e["duration"] for e in entries if e["duration"] > 0)
+
+    # Days practiced (unique dates)
+    days_practiced = len({e["date"] for e in entries})
+
+    # First session date
+    first_date = entries[0]["date"]
+
+    # Top 5 folders
+    folder_counts: Counter = Counter(
+        os.path.dirname(e["path"]) for e in entries
+    )
+    top_folders = folder_counts.most_common(5)
+
+    # Mode breakdown (all time)
+    mode_counts: Counter = Counter(e["dmode"] for e in entries)
+
+    print(f"\n  Session stats  ({LOG_FILE})")
+    print(f"  {'─' * 46}")
+    print(f"  Images opened  — today: {today_count}   this week: {week_count}   all time: {total_count}")
+    print(f"  Days practiced — {days_practiced}  (since {first_date})")
+    if total_secs > 0:
+        print(f"  Logged time    — {fmt_time(total_secs)}")
+    print(f"  Mode breakdown — " + "   ".join(f"{k}: {v}" for k, v in mode_counts.items()))
+    print(f"\n  Top folders (all time):")
+    for folder_path, count in top_folders:
+        print(f"    {count:>5}×  {folder_path}")
+    print()
+
+
+def print_streak():
+    entries = _read_log()
+    if not entries:
+        print("  [!] No session log found yet.")
+        return
+
+    today  = date.today()
+    dates  = {e["date"] for e in entries}
+
+    # Walk backwards from today counting consecutive days
+    streak = 0
+    cursor = today
+    while cursor in dates:
+        streak += 1
+        cursor -= timedelta(days=1)
+
+    # Also compute longest-ever streak
+    all_dates = sorted(dates)
+    best, run = 1, 1
+    for i in range(1, len(all_dates)):
+        if (all_dates[i] - all_dates[i-1]).days == 1:
+            run += 1
+            best = max(best, run)
+        else:
+            run = 1
+
+    last_date = max(dates)
+    gap       = (today - last_date).days
+
+    if streak == 0:
+        print(f"  🔥 No current streak  (last session: {last_date}, {gap} day(s) ago)")
+    elif streak == 1:
+        print(f"  🔥 Streak: 1 day  (started today)")
+    else:
+        print(f"  🔥 Streak: {streak} day(s) in a row")
+    print(f"     Best ever: {best} day(s)   |   Total days practiced: {len(dates)}")
+
+
+# ── OS integration helpers ─────────────────────────────────────────────────────
+
+def open_in_default_app(path: str):
+    """Open *path* in the OS default application for its file type."""
+    if not os.path.exists(path):
+        print(f"  [!] File not found: {path}")
+        return
+    try:
+        if os.name == "nt":                          # Windows
+            os.startfile(path)
+        elif sys.platform == "darwin":               # macOS
+            import subprocess
+            subprocess.Popen(["open", path])
+        else:                                        # Linux / BSD
+            import subprocess
+            subprocess.Popen(["xdg-open", path])
+    except Exception as e:
+        print(f"  [!] Could not open file: {e}")
+
+
+def reveal_in_explorer(path: str):
+    """Open the folder containing *path* and select the file where supported."""
+    if not os.path.exists(path):
+        print(f"  [!] File not found: {path}")
+        return
+    try:
+        if os.name == "nt":                          # Windows — select the file
+            import subprocess
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+        elif sys.platform == "darwin":               # macOS — reveal in Finder
+            import subprocess
+            subprocess.Popen(["open", "-R", path])
+        else:                                        # Linux — open parent folder
+            import subprocess
+            subprocess.Popen(["xdg-open", os.path.dirname(path)])
+    except Exception as e:
+        print(f"  [!] Could not reveal file: {e}")
 
 
 def fmt_time(seconds: int) -> str:
@@ -611,6 +1152,30 @@ Commands
   semi                  → semi-random opening mode
                          (prefers subfolders not yet seen)
 
+  gray / grayscale      → toggle grayscale mode on/off
+                         (value studies — images open desaturated)
+
+  stats                 → session statistics (images opened, folders, time)
+  streak                → current and best consecutive-day practice streak
+  resetlog              → delete all session log data (asks for confirmation)
+  log                   → toggle session logging on/off
+
+  open                  → open current image in the system default app
+                         (your painting software, image viewer, etc.)
+  reveal                → reveal current image in Explorer / Finder
+
+  flip h / horizontal   → reopen current image mirrored left-right
+  flip v / vertical     → reopen current image mirrored top-bottom
+                             (both work with grayscale mode)
+
+  palette               → show current image + dominant colour swatches
+  palette <n>           → extract n colours (default 6, max 12)
+                          swatches on the right; respects grayscale
+
+  grid                  → rule-of-thirds grid overlay on current image
+  grid <n>              → n×n grid (e.g. grid 4, grid 6)
+                          respects grayscale and flip
+
   cycle [interval] [total]
                         → gesture-drawing session: auto-advance
                           images every <interval>, stop after
@@ -756,9 +1321,11 @@ def main():
     folder  = _resolve_default_folder() or ""
     images: list[str] = []
     index   = 0
-    mem_mode     = False
-    mem_seconds  = default_mem_time
-    opening_mode = "random"   # "random" | "semi-random"
+    mem_mode      = False
+    mem_seconds   = default_mem_time
+    opening_mode  = "random"      # "random" | "semi-random"
+    grayscale_mode  = False         # toggle: images open via HTML wrapper with CSS grayscale
+    logging_enabled = True           # toggle: whether image opens are written to the log
     folders_used: dict[str, int] = {}   # subfolder → times picked (semi-random)
     current_image: str | None = None
 
@@ -782,7 +1349,10 @@ def main():
             return False
 
         if not force_scan and path in cache:
-            imgs    = cache[path]
+            imgs = cache[path]
+            if not imgs:
+                print(f"  [!] No images found in: {path}  (cached — run 'scan' to refresh)")
+                return False
             key     = path_keys.get(path)
             key_str = f"  [key: {key}]" if key else ""
             print(f"  ✔  Loaded {len(imgs)} images from cache: {path}{key_str}")
@@ -863,8 +1433,18 @@ def main():
         name = os.path.relpath(path, folder) if folder else path
         if print_flag:
             pos_str = f"{idx + 1}/{total}" if opening_mode == "random" else f"~/{total}"
-            print(f"  [{pos_str}]  {name}")
-        open_path_in_firefox(path)
+            gray_tag = "  [gray]" if grayscale_mode else ""
+            print(f"  [{pos_str}]  {name}{gray_tag}")
+        open_image(path, grayscale_mode)
+        # Log the event — determine display_mode and duration
+        if _cycle_thread and _cycle_thread.is_alive():
+            _log_dmode, _log_dur = "cycle", _cycle_thread.interval
+        elif mem_mode:
+            _log_dmode, _log_dur = "mem", mem_seconds
+        else:
+            _log_dmode, _log_dur = "normal", 0
+        if logging_enabled:
+            log_entry(path, opening_mode, _log_dmode, _log_dur)
         if mem_mode:
             start_mem_timer(mem_seconds)
 
@@ -913,10 +1493,13 @@ def main():
             active_key  = path_keys.get(folder)
             key_str     = f"  [key: {active_key}]" if active_key else ""
             img_str     = str(len(images)) if images else "none loaded"
+            gray_str    = "on  (value study)" if grayscale_mode else "off"
             print(f"  Folder   : {folder}{key_str}")
             print(f"  Images   : {img_str}")
             print(f"  Mode     : {mode_str}{cycle_str}")
             print(f"  Opening  : {opening_mode}")
+            print(f"  Grayscale: {gray_str}")
+            print(f"  Logging  : {'on' if logging_enabled else 'OFF (paused)'}")
             print(f"  Save →   : [{_sfi[0] + 1}] {save_dest}")
 
         # ── Shuffle ────────────────────────────────────────────────────────
@@ -945,6 +1528,131 @@ def main():
             opening_mode = "semi-random"
             folders_used.clear()
             print(f"  ► Opening mode: semi-random  (repeat probability: {semi_rand_probability}).")
+
+        # ── Grayscale toggle ───────────────────────────────────────────────
+        elif cmd in ("gray", "grayscale"):
+            grayscale_mode = not grayscale_mode
+            if grayscale_mode:
+                print("  ◑  Grayscale ON  — images will open desaturated (value studies).")
+            else:
+                print("  ●  Grayscale OFF — images will open in full colour.")
+
+        # ── Flip (one-shot mirror of current image) ────────────────────────
+        elif cmd == "flip" or cmd.startswith("flip "):
+            if current_image is None:
+                print("  [!] No image has been opened yet.")
+            else:
+                arg = cmd[4:].strip()
+                if arg in ("h", "horizontal"):
+                    flip_dir  = "h"
+                    flip_name = "horizontal (left-right)"
+                elif arg in ("v", "vertical"):
+                    flip_dir  = "v"
+                    flip_name = "vertical (top-bottom)"
+                else:
+                    print("  [?] Usage:  flip h  |  flip horizontal  |  flip v  |  flip vertical")
+                    flip_dir = None
+
+                if flip_dir:
+                    name     = os.path.relpath(current_image, folder) if folder else current_image
+                    gray_tag = "  [gray]" if grayscale_mode else ""
+                    print(f"  ↔  Flip {flip_name}{gray_tag}  — {name}")
+                    open_image(current_image, grayscale_mode, flip_dir)
+                    if mem_mode:
+                        start_mem_timer(mem_seconds)
+
+        # ── Palette ────────────────────────────────────────────────────────
+        elif cmd == "palette" or cmd.startswith("palette "):
+            if current_image is None:
+                print("  [!] No image has been opened yet.")
+            else:
+                arg = cmd[7:].strip()
+                if arg.isdigit() and 1 <= int(arg) <= 12:
+                    n_pal = int(arg)
+                elif arg == "":
+                    n_pal = 6
+                else:
+                    print("  [?] Usage:  palette  |  palette <n>  (n = 1–12)")
+                    n_pal = 0
+                if n_pal:
+                    open_palette(current_image, n_pal, grayscale_mode)
+                    if mem_mode:
+                        start_mem_timer(mem_seconds)
+
+        # ── Grid overlay ────────────────────────────────────────────────────
+        elif cmd == "grid" or cmd.startswith("grid "):
+            if current_image is None:
+                print("  [!] No image has been opened yet.")
+            else:
+                arg = cmd[4:].strip()
+                if arg == "":
+                    divisions = 3
+                elif arg.isdigit() and 2 <= int(arg) <= 12:
+                    divisions = int(arg)
+                else:
+                    print("  [?] Usage:  grid  |  grid <n>  (n = 2–12, default 3)")
+                    divisions = 0
+                if divisions:
+                    name      = os.path.relpath(current_image, folder) if folder else current_image
+                    gray_tag  = "  [gray]" if grayscale_mode else ""
+                    grid_name = "rule of thirds" if divisions == 3 else f"{divisions}×{divisions}"
+                    print(f"  ⊞  Grid ({grid_name}){gray_tag}  — {name}")
+                    open_grid(current_image, divisions, grayscale_mode, None)
+                    if mem_mode:
+                        start_mem_timer(mem_seconds)
+
+        # ── Stats ──────────────────────────────────────────────────────────
+        elif cmd == "stats":
+            print_stats()
+
+        # ── Streak ─────────────────────────────────────────────────────────
+        elif cmd == "streak":
+            print_streak()
+
+        # ── Reset log ──────────────────────────────────────────────────────
+        elif cmd == "resetlog":
+            if not os.path.exists(LOG_FILE):
+                print("  [!] No log file found — nothing to reset.")
+            else:
+                try:
+                    confirm = input("  This will permanently delete all session history. Are you sure? (yes/n): ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print("\n  [!] Cancelled.")
+                    continue
+                if confirm == "yes":
+                    try:
+                        os.remove(LOG_FILE)
+                        print("  ✔  Session log deleted.")
+                    except Exception as e:
+                        print(f"  [!] Could not delete log: {e}")
+                else:
+                    print("  Cancelled.")
+
+        # ── Log toggle ─────────────────────────────────────────────────────
+        elif cmd == "log":
+            logging_enabled = not logging_enabled
+            if logging_enabled:
+                print("  ✔  Logging ON  — sessions will be recorded.")
+            else:
+                print("  ⏸  Logging OFF — sessions will not be recorded until you type 'log' again.")
+
+        # ── Open in default app ────────────────────────────────────────────
+        elif cmd == "open":
+            if current_image is None:
+                print("  [!] No image has been opened yet.")
+            else:
+                name = os.path.relpath(current_image, folder) if folder else current_image
+                print(f"  ↗  Opening in default app: {name}")
+                open_in_default_app(current_image)
+
+        # ── Reveal in Explorer / Finder ─────────────────────────────────────
+        elif cmd == "reveal":
+            if current_image is None:
+                print("  [!] No image has been opened yet.")
+            else:
+                name = os.path.relpath(current_image, folder) if folder else current_image
+                print(f"  📂 Revealing: {name}")
+                reveal_in_explorer(current_image)
 
         # ── Save current image ─────────────────────────────────────────────
         elif cmd == "save":
@@ -1252,8 +1960,13 @@ def main():
                     path = random.choice(siblings)
                 current_image = path
                 name = os.path.relpath(path, folder) if folder else path
-                print(f"  [prev folder]  {name}")
-                open_path_in_firefox(path)
+                gray_tag = "  [gray]" if grayscale_mode else ""
+                print(f"  [prev folder]  {name}{gray_tag}")
+                open_image(path, grayscale_mode)
+                _log_dmode2 = "mem" if mem_mode else "normal"
+                _log_dur2   = mem_seconds if mem_mode else 0
+                if logging_enabled:
+                    log_entry(path, opening_mode, _log_dmode2, _log_dur2)
                 if mem_mode:
                     start_mem_timer(mem_seconds)
                 continue
@@ -1303,8 +2016,13 @@ def main():
                 img_path      = results[search_idx]
                 current_image = img_path
                 name          = os.path.relpath(img_path, folder) if folder else img_path
-                print(f"\n  [{search_idx + 1}/{len(results)}]  {name}")
-                open_path_in_firefox(img_path)
+                gray_tag      = "  [gray]" if grayscale_mode else ""
+                print(f"\n  [{search_idx + 1}/{len(results)}]  {name}{gray_tag}")
+                open_image(img_path, grayscale_mode)
+                _log_dmode3 = "mem" if mem_mode else "normal"
+                _log_dur3   = mem_seconds if mem_mode else 0
+                if logging_enabled:
+                    log_entry(img_path, opening_mode, _log_dmode3, _log_dur3)
                 if mem_mode:
                     start_mem_timer(mem_seconds)
                 search_idx += 1
